@@ -20,7 +20,9 @@ namespace TransitTimetables
 
             ActiveSetting = new Setting(this);
             ActiveSetting.RegisterInOptionsUI();
-            GameManager.instance.localizationManager.AddSource("en-US", new LocaleEn(ActiveSetting));
+            var lm = GameManager.instance.localizationManager;
+            foreach (var locale in lm.GetSupportedLocales())
+                lm.AddSource(locale, new LocaleEn(ActiveSetting, locale));
             AssetDatabase.global.LoadSettings(nameof(TransitTimetables), ActiveSetting, new Setting(this));
             // Persist every settings change to disk the moment it is applied (survives a crash / non-clean exit).
             ActiveSetting.onSettingsApplied += OnSettingsApplied;
@@ -34,8 +36,6 @@ namespace TransitTimetables
             updateSystem.UpdateAt<TimetableDispatchSystem>(SystemUpdatePhase.GameSimulation);
             // Line-panel editor + stop departure board bindings (floating overlay, does not pause the game).
             updateSystem.UpdateAt<TransitParamsUISystem>(SystemUpdatePhase.UIUpdate);
-            // Keep platform achievements enabled while the mod is active.
-            updateSystem.UpdateAt<AchievementEnablerSystem>(SystemUpdatePhase.GameSimulation);
 
             log.Info("[SelfTest] TransitTimetables loaded (fixed-departure timetables).");
         }
@@ -67,7 +67,9 @@ namespace TransitTimetables
     public class LocaleEn : IDictionarySource
     {
         private readonly Setting m_S;
-        public LocaleEn(Setting setting) { m_S = setting; }
+        private readonly string m_L;
+        public LocaleEn(Setting setting, string locale) { m_S = setting; m_L = locale; }
+        private string T(string k) => Translations.Get(k, m_L);
 
         public IEnumerable<KeyValuePair<string, string>> ReadEntries(IList<IDictionaryEntryError> errors, Dictionary<string, int> indexCounts)
         {
@@ -75,38 +77,77 @@ namespace TransitTimetables
             {
                 { m_S.GetSettingsLocaleID(), "Transit Timetables" },
                 { m_S.GetOptionTabLocaleID(Setting.Section), "Main" },
-                { m_S.GetOptionGroupLocaleID(Setting.GroupWindows), "Peak windows" },
-                { m_S.GetOptionGroupLocaleID(Setting.GroupRealism), "Realistic travel time" },
-                { m_S.GetOptionGroupLocaleID(Setting.GroupCompat), "Compatibility" },
+                { "TransitTimetables.ui.to", T("ui.to") },
+                { "TransitTimetables.ui.timetable", T("ui.timetable") },
+                { "TransitTimetables.ui.on", T("ui.on") },
+                { "TransitTimetables.ui.off", T("ui.off") },
+                { "TransitTimetables.ui.ttNow", T("ui.ttNow") },
+                { "TransitTimetables.ui.ttNext", T("ui.ttNext") },
+                { "TransitTimetables.ui.firstDeparture", T("ui.firstDeparture") },
+                { "TransitTimetables.ui.peakInterval", T("ui.peakInterval") },
+                { "TransitTimetables.ui.offPeakInterval", T("ui.offPeakInterval") },
+                { "TransitTimetables.ui.otherHours", T("ui.otherHours") },
+                { "TransitTimetables.ui.nightInterval", T("ui.nightInterval") },
+                { "TransitTimetables.ui.customLinePeak", T("ui.customLinePeak") },
+                { "TransitTimetables.ui.morningPeak", T("ui.morningPeak") },
+                { "TransitTimetables.ui.eveningPeak", T("ui.eveningPeak") },
+                { "TransitTimetables.ui.customPeakInterval", T("ui.customPeakInterval") },
+                { "TransitTimetables.ui.terminusHint", T("ui.terminusHint") },
+                { "TransitTimetables.ui.noLines", T("ui.noLines") },
+                { "TransitTimetables.ui.line", T("ui.line") },
+                { "TransitTimetables.ui.terminusBadge", T("ui.terminusBadge") },
+                { "TransitTimetables.ui.departs", T("ui.departs") },
+                { "TransitTimetables.ui.noDepartures", T("ui.noDepartures") },
+                { "TransitTimetables.ui.notTimetabled", T("ui.notTimetabled") },
+                { "TransitTimetables.ui.setTerminusThis", T("ui.setTerminusThis") },
+                { "TransitTimetables.ui.setTerminusAll", T("ui.setTerminusAll") },
+                { "TransitTimetables.ui.setTerminusHint", T("ui.setTerminusHint") },
+                { "TransitTimetables.ui.buttonTooltip", T("ui.buttonTooltip") },
+                { "TransitTimetables.ui.panelTitle", T("ui.panelTitle") },
+                { "TransitTimetables.ui.panelHint", T("ui.panelHint") },
+                { m_S.GetOptionGroupLocaleID(Setting.GroupWindows), T("grp.GroupWindows") },
+                { m_S.GetOptionGroupLocaleID(Setting.GroupRealism), T("grp.GroupRealism") },
+                { m_S.GetOptionGroupLocaleID(Setting.GroupCompat), T("grp.GroupCompat") },
 
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.RealisticTravelTime)), "Realistic travel time (correct posted times)" },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.RealisticTravelTime)), "The game's own estimate of how long a line takes undershoots the real, simulated loop — buses accelerate and brake at every stop, which the estimate ignores (measured live at roughly 1.7x on sparse lines up to ~2.5x on stop-dense ones). Turn this ON and the mod measures each line's real loop and posts realistic stop times, so the board matches what the buses actually do. Costs nothing — it only makes the clock honest. OFF by default; existing timetables are unchanged until you enable it." },
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.ProvisionRealFleet)), "Provision fleet for real travel time (costs money)" },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.ProvisionRealFleet)), "Also size each line's vehicle count to its REAL loop instead of the estimate. This is the one that spends: holding a tight headway on a line whose real loop is ~2x the estimate needs about twice the vehicles, and twice the upkeep. OFF (default) keeps the estimate-based count, so a line silently runs a longer effective headway than you set; ON provisions for the real loop. Grow-only — it never cuts a line below the estimate — and capped, so a bad reading can't flood you with buses." },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.RealisticTravelTime)), T("opt.RealisticTravelTime.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.RealisticTravelTime)), T("opt.RealisticTravelTime.D") },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.ProvisionRealFleet)), T("opt.ProvisionRealFleet.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.ProvisionRealFleet)), T("opt.ProvisionRealFleet.D") },
 
-                { m_S.GetOptionGroupLocaleID(Setting.GroupStops), "Stops" },
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.StopAtEveryStop)), "Stop at every stop (even empty ones)" },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.StopAtEveryStop)), "By default Cities: Skylines II lets a bus SKIP a stop where nobody is waiting and nobody wants to get off — it only slows and rolls through, so that stop is never held to its scheduled departure and the bus can run ahead of its timetable. The terminus is now always forced to stop regardless of this setting (skipping it would strand the whole schedule). Turn this ON to force buses to pull in and stop at EVERY stop on a timetabled line, so every posted time is honoured — at the cost of a short dwell at each empty stop, which makes lines run a little slower. Affects buses and other road vehicles only; trains, trams, ships and aircraft already stop at every station. OFF by default." },
+                { m_S.GetOptionGroupLocaleID(Setting.GroupStops), T("grp.GroupStops") },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.StopAtEveryStop)), T("opt.StopAtEveryStop.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.StopAtEveryStop)), T("opt.StopAtEveryStop.D") },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.MinDwellRoad)), T("opt.MinDwellRoad.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.MinDwellRoad)), T("opt.MinDwellRoad.D") },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.MinDwellRail)), T("opt.MinDwellRail.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.MinDwellRail)), T("opt.MinDwellRail.D") },
 
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.RealisticTripsCompat)), "Realistic Trips / slow-time compatibility — turn ON if you run RT or Time2Work (ALPHA)" },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.RealisticTripsCompat)), "OFF by default — leave it off unless you run a mod that lengthens the in-game day (Time2Work / \"Realistic Trips\" or similar). Turn it ON with such a mod and departures, stop times and fleet sizes stay correct instead of running early; the mod measures the real day length automatically. With no slow-time mod this setting does nothing, and if the mod detects one while this is OFF it will note it in the log. NOTE: this compatibility path is an ALPHA and has NOT been tested against Realistic Trips in-game yet — please report anything odd. Under Realistic Trips your lines will correctly use fewer vehicles than before." },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.RealisticTripsCompat)), T("opt.RealisticTripsCompat.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.RealisticTripsCompat)), T("opt.RealisticTripsCompat.D") },
 
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.MorningPeakStart)), "Morning peak start" },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.MorningPeakStart)), "Hour the morning peak service level begins." },
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.MorningPeakEnd)), "Morning peak end" },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.MorningPeakEnd)), "Hour the morning peak service level ends." },
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.EveningPeakStart)), "Evening peak start" },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.EveningPeakStart)), "Hour the evening peak service level begins." },
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.EveningPeakEnd)), "Evening peak end" },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.EveningPeakEnd)), "Hour the evening peak service level ends." },
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.NightStart)), "Night start" },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.NightStart)), "Hour night service begins (may wrap past midnight)." },
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.NightEnd)), "Night end" },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.NightEnd)), "Hour night service ends." },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.MorningPeakStart)), T("opt.MorningPeakStart.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.MorningPeakStart)), T("opt.MorningPeakStart.D") },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.MorningPeakEnd)), T("opt.MorningPeakEnd.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.MorningPeakEnd)), T("opt.MorningPeakEnd.D") },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.EveningPeakStart)), T("opt.EveningPeakStart.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.EveningPeakStart)), T("opt.EveningPeakStart.D") },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.EveningPeakEnd)), T("opt.EveningPeakEnd.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.EveningPeakEnd)), T("opt.EveningPeakEnd.D") },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.NightStart)), T("opt.NightStart.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.NightStart)), T("opt.NightStart.D") },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.NightEnd)), T("opt.NightEnd.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.NightEnd)), T("opt.NightEnd.D") },
 
-                { m_S.GetOptionGroupLocaleID(Setting.GroupGeneral), "General" },
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.EnableAchievements)), "Keep achievements enabled" },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.EnableAchievements)), "Cities: Skylines II disables achievements whenever any mod is active. This re-enables them. Safe to leave on." },
+                { m_S.GetOptionGroupLocaleID(Setting.GroupGeneral), T("grp.GroupGeneral") },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.Enabled)), T("opt.Enabled.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.Enabled)), T("opt.Enabled.D") },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.ManageVehicleCount)), T("opt.ManageVehicleCount.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.ManageVehicleCount)), T("opt.ManageVehicleCount.D") },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.CleanUninstall)), T("opt.CleanUninstall.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.CleanUninstall)), T("opt.CleanUninstall.D") },
+                // Confirmation-dialog body. Without this the destructive button's [SettingsUIConfirmation] prompt shows
+                // a RAW LOCALE KEY instead of a warning — unacceptable for an action that clears every timetable.
+                { m_S.GetOptionWarningLocaleID(nameof(Setting.CleanUninstall)), T("opt.CleanUninstall.W") },
             };
         }
 

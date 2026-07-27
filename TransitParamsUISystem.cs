@@ -25,6 +25,7 @@ namespace TransitTimetables
         private TimebaseSystem m_Timebase;
         private TimetableDispatchSystem m_Dispatch;   // for the shared real-travel-time LineCorrection (board == holds)
         private ToolSystem m_ToolSystem;
+        private NameSystem m_NameSystem;              // #10: the line's editable/custom name for the departure board
 
         // Selected LINE timetable cache.
         private bool m_SelHas;
@@ -78,6 +79,7 @@ namespace TransitTimetables
             m_Timebase = World.GetOrCreateSystemManaged<TimebaseSystem>();
             m_Dispatch = World.GetOrCreateSystemManaged<TimetableDispatchSystem>();
             m_ToolSystem = World.GetOrCreateSystemManaged<ToolSystem>();
+            m_NameSystem = World.GetOrCreateSystemManaged<NameSystem>();
 
             m_SelHasB = new GetterValueBinding<bool>(Group, "selHas", () => m_SelHas);
             m_SelTtEnabledB = new GetterValueBinding<bool>(Group, "selTtEnabled", () => m_SelTtEnabled);
@@ -214,6 +216,29 @@ namespace TransitTimetables
 
         private static int Clamp(int v, int lo, int hi) => v < lo ? lo : (v > hi ? hi : v);
 
+        // Escape a user-typed line name for inclusion in the hand-built board JSON string.
+        private static string JsonEscape(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return s;
+            var sb = new StringBuilder(s.Length + 8);
+            foreach (char c in s)
+            {
+                switch (c)
+                {
+                    case '"': sb.Append("\\\""); break;
+                    case '\\': sb.Append("\\\\"); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': sb.Append("\\r"); break;
+                    case '\t': sb.Append("\\t"); break;
+                    default:
+                        if (c < 0x20) sb.Append("\\u").Append(((int)c).ToString("x4"));
+                        else sb.Append(c);
+                        break;
+                }
+            }
+            return sb.ToString();
+        }
+
         // RouteSchedule of a line (mirrors the game's ScheduleSection): 0=Day-only, 1=Night-only, 2=DayAndNight.
         private int ScheduleOf(Entity line) => LineSchedule.Of(EntityManager, line);
 
@@ -296,7 +321,9 @@ namespace TransitTimetables
                 m_SelTtFleet = dur > 1f ? ScheduleMath.DerivedFleet(fleetUnits, m_SelTtInterval, um) : 0;
                 m_SelTtRealInfo = BuildRealInfo(sel, dur, um); // honest real-vs-estimate line (shown regardless of toggles)
                 Entity term = TerminusWaypoint(sel, sch);
-                m_SelTtNext = DeparturesAtStop(sel, sch, term, term, m_SelSchedule, nowMin); // next departures from now
+                // No departure predictions while the master switch is off — buses run vanilla, so posting scheduled
+                // times would mislead. The config above stays visible/editable; only the live prediction is suppressed.
+                m_SelTtNext = s.Enabled ? DeparturesAtStop(sel, sch, term, term, m_SelSchedule, nowMin) : "";
             }
             else
             {
@@ -316,7 +343,9 @@ namespace TransitTimetables
             m_SelStopHas = isStop;
             if (isStop)
             {
-                m_SelStopBoard = BuildStopBoard(s, nowMin); // also (re)builds m_BoardRows in lockstep with the JSON
+                // Master switch off => show no mod departure board (vanilla); clear the row map the terminus buttons use.
+                if (!s.Enabled) { m_SelStopBoard = "[]"; m_BoardRows.Clear(); }
+                else m_SelStopBoard = BuildStopBoard(s, nowMin); // also (re)builds m_BoardRows in lockstep with the JSON
                 // Per-line terminus context (for "Set as terminus for Line N"): is the open line timetabled AND on the
                 // board (i.e. serves one of the resolved stops)? LineRowIndex reads the board built just above.
                 bool lastOk = m_LastLine != Entity.Null && EntityManager.Exists(m_LastLine)
@@ -420,6 +449,9 @@ namespace TransitTimetables
                 Entity line = m_BoardRows[i].line;
                 Entity stop = m_BoardRows[i].stop;
                 int number = EntityManager.HasComponent<RouteNumber>(line) ? EntityManager.GetComponentData<RouteNumber>(line).m_Number : line.Index;
+                // #10: the line's editable NAME (set by renaming the line) — shown on the board instead of "Line <n>"
+                // when present; falls back to the route number when the line has no custom name.
+                string nm = (m_NameSystem != null && m_NameSystem.TryGetCustomName(line, out string cn) && !string.IsNullOrEmpty(cn)) ? cn : null;
                 bool hasSched = EntityManager.HasComponent<TimetableSchedule>(line);
                 TimetableSchedule sch = hasSched ? EntityManager.GetComponentData<TimetableSchedule>(line) : default;
                 bool tt = hasSched && sch.m_Enabled;
@@ -447,7 +479,9 @@ namespace TransitTimetables
                     term = termStop != Entity.Null && termStop == stop;
                 }
                 if (i > 0) sb.Append(',');
-                sb.Append("{\"n\":").Append(number).Append(",\"tt\":").Append(tt ? "true" : "false")
+                sb.Append("{\"n\":").Append(number);
+                if (nm != null) sb.Append(",\"nm\":\"").Append(JsonEscape(nm)).Append('"');
+                sb.Append(",\"tt\":").Append(tt ? "true" : "false")
                   .Append(",\"term\":").Append(term ? "true" : "false").Append(",\"d\":\"").Append(dep).Append("\"}");
             }
             sb.Append(']');
@@ -534,7 +568,15 @@ namespace TransitTimetables
               .Append(corr.ToString("0.0")).Append("x the ").Append(estMin).Append("-min estimate, ")
               .Append(measured ? "measured" : "estimated").Append("). ");
             Setting s = S;
-            if (s != null && s.ProvisionRealFleet)
+            if (s != null && !s.ManageVehicleCount)
+            {
+                // The mod isn't setting the count (compat mode) — the number is only what THIS headway needs; you or
+                // another fleet mod own the actual fleet.
+                int needFleet = ScheduleMath.DerivedFleet(dur, interval, um);
+                sb.Append("Vehicle-count management is OFF: this headway needs ~").Append(needFleet)
+                  .Append(" vehicles, but you or another fleet mod set the count.");
+            }
+            else if (s != null && s.ProvisionRealFleet)
             {
                 float fc = m_Dispatch.LineCorrection(line, dur, true);
                 int realFleet = ScheduleMath.DerivedFleet(dur * fc, interval, um);

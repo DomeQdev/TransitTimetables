@@ -235,7 +235,7 @@ export const TimetableEditor = () => {
 const StopBoard = () => {
     const raw = useValue(selStopBoard$) as string;
     const t = useT();
-    let board: Array<{ n: number; tt: boolean; term: boolean; d: string }> = [];
+    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; d: string }> = [];
     try { board = JSON.parse(raw || "[]"); } catch { board = []; }
     const ttCount = board.filter((e) => e.tt).length;
     const termBtn = {
@@ -250,7 +250,7 @@ const StopBoard = () => {
                 board.map((e, i) => (
                     <div key={i} style={{ padding: "5rem 14rem", borderTop: i > 0 ? "1rem solid rgba(255,255,255,0.08)" : undefined }}>
                         <div style={{ display: "flex", alignItems: "center", fontSize: "13rem", fontWeight: "bold" }}>
-                            <div style={{ flex: 1 }}>{t("line", "Line {n}", { n: e.n })}</div>
+                            <div style={{ flex: 1 }}>{e.nm ? e.nm : t("line", "Line {n}", { n: e.n })}</div>
                             {e.term ? <div style={{ fontSize: "11rem", color: "rgb(120, 210, 130)" }}>★ {t("terminusBadge", "terminus")}</div> : null}
                         </div>
                         <div style={{ fontSize: "12rem", color: e.tt ? "rgb(120, 210, 130)" : "rgba(255,255,255,0.45)" }}>

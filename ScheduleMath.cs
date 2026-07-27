@@ -109,6 +109,33 @@ namespace TransitTimetables
             return first;
         }
 
+        // The most recent scheduled departure STRICTLY BEFORE nowMinute, as an ABSOLUTE minute from today's midnight
+        // (may be negative when it belongs to yesterday's service). Mirror of NextDeparture with the SAME anchored
+        // day-stepping, so a night window that wraps past midnight and a non-dividing interval stay aligned. Used by the
+        // missed-trip catch-up to tell whether a scheduled slot has passed UNCOVERED. Returns int.MinValue when no
+        // in-service departure precedes now (e.g. before the very first departure of a day-only line).
+        public static int PreviousDeparture(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int nowMinute)
+        {
+            int first = FirstDeparture(s, sch, schedule);
+            int best = int.MinValue;
+            for (int day = -1; day <= 1; day++)
+            {
+                int t = first + day * 1440;
+                int dayEnd = t + 1440;
+                int guard = 0;
+                while (guard < 4000 && t < dayEnd)
+                {
+                    int minute = Mod1440(t);
+                    if (!InService(s, schedule, minute)) break; // left the operating window -> this block is done
+                    if (t < nowMinute) best = t;                // latest in-window departure strictly before now...
+                    else break;                                 // ...t reached now; nothing later in the scan is earlier
+                    t += IntervalFor(s, sch, customSch, minute, schedule);
+                    guard++;
+                }
+            }
+            return best;
+        }
+
         // The day's departures listed FROM the first departure (printed-timetable style), as minute-of-day 0..1439,
         // stopping at the operating-window boundary. Fills up to `count`; returns how many.
         public static int DayFromFirst(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int[] outMin, int count)

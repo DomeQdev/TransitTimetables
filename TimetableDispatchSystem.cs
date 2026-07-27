@@ -68,13 +68,50 @@ namespace TransitTimetables
         // Set on every game/save load; the next OnUpdate runs the global unbunching heal once, then clears it. Init true
         // so the sweep still fires if the system is created AFTER OnGameLoadingComplete already ran (mod-loads-late).
         private bool m_GlobalHealPending = true;
+        // Set by the Options "clean uninstall" button (UI thread); consumed once on the next simulation tick to strip
+        // every mod component + mutation from the save so the player can remove the mod with no residue. volatile:
+        // written on the UI thread, read on the sim thread.
+        private static volatile bool s_cleanUninstallPending;
+        public static void RequestCleanUninstall() => s_cleanUninstallPending = true;
         private readonly Dictionary<Entity, int> m_LastFleet = new Dictionary<Entity, int>();
+        // Flood-on-load guard. The raw line-duration estimate (m_Fleet.LineStableDurationUnits) is transiently inflated
+        // for the first ticks after a save loads: the game re-paths the line and zeroes each line's transport speed at
+        // the top of every tick before re-filling it, and a segment path's duration scales inversely with speed, so the
+        // estimate spikes (users saw ~10x) then settles. Sizing the fleet off that spike floods the city with vehicles.
+        // m_LastDur/m_DurStable require the estimate to agree with the previous tick (within 5%) for kDurStableTicks
+        // consecutive ticks before we act on it, so the unsettled spike is skipped and only a stable value ever reaches
+        // TrySetLineFleet. Purely transient (rebuilt from live reads; nothing here is serialized).
+        private readonly Dictionary<Entity, float> m_LastDur = new Dictionary<Entity, float>();
+        private readonly Dictionary<Entity, int> m_DurStable = new Dictionary<Entity, int>();
+        private const int kDurStableTicks = 3;
         // Per line: vehicles the game flagged to retire that we're driving to the terminus before letting them go.
         private readonly Dictionary<Entity, HashSet<Entity>> m_PendingRetire = new Dictionary<Entity, HashSet<Entity>>();
         // Per line: buses seen AWAY from the terminus (serving the loop) since they appeared — i.e. that have earned
         // a full loop and may now retire on their next return. A freshly-deployed bus is absent from this set until
         // it leaves the terminus, so it always completes one serving lap before it can be recalled.
         private readonly Dictionary<Entity, HashSet<Entity>> m_LapServed = new Dictionary<Entity, HashSet<Entity>>();
+        // Vehicles whose retirement we have COMMITTED to (flag asserted at the terminus with the slot covered). Lets the
+        // decision survive the brief ticks where no bus is boarding the terminus, without falling back to the old
+        // "any vanilla-flagged bus may retire" rule that bypassed the slot-covered check entirely. Keyed by vehicle;
+        // pruned against the live-vehicle set each tick. Transient — nothing here is serialized.
+        private readonly HashSet<Entity> m_Committed = new HashSet<Entity>();
+        // MISSED-TRIP CATCH-UP: per LINE, the sim FRAME of the most recent scheduled slot a bus was assigned/dispatched
+        // on ("claimed"). When a bus reaches the terminus and a scheduled slot has since passed UNCOVERED (its frame is
+        // newer than this) it is dispatched IMMEDIATELY to fill the gap instead of idling to the next slot — provided
+        // that next slot is more than kCatchUpMinNextLeadFrac of a headway away, so the catch-up bus can't bunch with
+        // the imminent on-time one. Recording the claim on every (re)assignment stops a second bus re-covering the same
+        // slot. A monotonic frame (midnight-safe); transient (cleared on load/regime change, pruned per tick).
+        private readonly Dictionary<Entity, uint> m_LastSlotFrame = new Dictionary<Entity, uint>();
+        // The one live-tunable knob (see the risk analysis): only catch up when the next slot is at least this fraction
+        // of a headway away. Lower = more aggressive gap-filling (risks bunching); higher = leaves more gaps uncovered.
+        // Raised from 0.5 for an UNTESTABLE ship. A catch-up departure is deliberately OFF the posted grid, and the board
+        // (TransitParamsUISystem) knows nothing about it — so every catch-up is a departure the printed timetable does
+        // not show. At 0.5 that could become routine on an under-provisioned line (the default config), which would read
+        // as "the mod broke my timetable". At 0.65 it only fires when it recovers at least ~two thirds of a headway,
+        // i.e. when the gap it fills clearly outweighs the off-grid departure. Lower = fills more gaps but drifts off the
+        // board; higher = stays on the board but leaves gaps unserved.
+        private const float kCatchUpMinNextLeadFrac = 0.65f;
+        private uint m_LastCatchUpLog; // throttle for the catch-up log
         // Reused scratch for pruning the above dicts against the live query (a line bulldozed while enabled leaves the
         // query without hitting the disable branch, so its keys would otherwise leak). Members = no per-update alloc.
         private readonly HashSet<Entity> m_LiveScratch = new HashSet<Entity>();
@@ -94,6 +131,8 @@ namespace TransitTimetables
 
         // Minimum stop dwell (minutes) for a bus that arrives ON its slot or LATE, so it still boards/offloads instead
         // of being force-departed the instant it pulls in. Early buses are unaffected (they board during their hold).
+        // Default minimum stop dwell (minutes). Now only the DEFAULT behind Setting.MinDwellRoad / MinDwellRail — the
+        // live values come from those, so this constant exists to document the historical value the settings default to.
         private const int kMinDwellMinutes = 2;
         // The frame each vehicle started boarding its CURRENT stop. Presence == "boarding now"; stamped on the first
         // tick boarding and dropped when it leaves (so the same stop next loop re-stamps). Feeds HoldStop's min-dwell.
@@ -124,7 +163,13 @@ namespace TransitTimetables
         private const float kLoopAlpha     = 0.30f;      // EMA smoothing for the measured loop
         private const int   kMinTrustSamples = 4;        // measured correction is trusted over the density prior at >= this
         private const int   kResetAfterRejects = 4;      // consecutive rejects => the min anchor is stale (route edit / glitch): re-anchor
-        private const int   kFleetCap        = 100;      // absolute per-line vehicle sanity cap (a bad reading can't flood)
+        // Absolute per-line vehicle sanity cap — a runaway BACKSTOP, not a design limit, and it must sit far clear of any
+        // legitimate need: the drain treats everything above the target as surplus, so a line that genuinely wants more
+        // than the cap is not merely capped, it is actively DRAINED down to it. Now that the cap applies on every path
+        // (not just the opt-in correction) 100 was too tight — a long metro loop at a tight headway can exceed it
+        // legitimately (a 271-minute loop on a 2-minute headway needs ~136). The real flood protection is the
+        // duration-stability gate above; this only stops an absurd reading running away.
+        private const int   kFleetCap        = 150;
 
         // Read by VehicleLimitSystem to auto-uncap the vehicle ceiling while any line is timetabled.
         public static bool TimetableInUse;
@@ -170,6 +215,12 @@ namespace TransitTimetables
         {
             base.OnGameLoadingComplete(purpose, mode);
             m_GlobalHealPending = true;
+            // Drop any clean-uninstall request that was armed BEFORE this city loaded. The flag is static (it must
+            // survive the per-load system recreation between the button press and the next tick), and OnUpdate does not
+            // tick at the main menu — so a press made outside a city would otherwise sit armed and wipe the timetables of
+            // whatever city is loaded NEXT. A legitimate in-game press can't be lost here: no load happens between the
+            // press and its consumption on the following tick.
+            s_cleanUninstallPending = false;
         }
 
         public override int GetUpdateInterval(SystemUpdatePhase phase) => 8;
@@ -196,9 +247,22 @@ namespace TransitTimetables
             m_Fpm = m_Timebase.FramesPerMinute;
             m_Um = m_Timebase.UnitMinutes;
             uint tbGen = m_Timebase.RegimeGeneration;
-            if (tbGen != m_TimebaseGen) { m_TimebaseGen = tbGen; m_RunSlotFrame.Clear(); }
+            if (tbGen != m_TimebaseGen) { m_TimebaseGen = tbGen; m_RunSlotFrame.Clear(); m_LastSlotFrame.Clear(); }
+
+            // Clean-uninstall button (Options): one-shot wipe of every mod component + mutation, then bail this tick.
+            // Runs regardless of the master switch, so a paused mod can still be cleaned out.
+            if (s_cleanUninstallPending)
+            {
+                s_cleanUninstallPending = false;
+                CleanUninstall(frame);
+                return;
+            }
 
             NativeArray<Entity> lines = m_LineQuery.ToEntityArray(Allocator.Temp);
+            // Deferred structural changes (adding the LineMeasuredTravel persistence component to a line that lacks it):
+            // recorded during the per-line loop and played back AFTER it, so we never change an archetype mid-iteration
+            // while this line's buffer/component handles are live (the ECS structural-change hazard).
+            EntityCommandBuffer ecb = new EntityCommandBuffer(Allocator.Temp);
             bool anyEnabled = false;
             int enabledCount = 0;
             string sample = null;
@@ -211,7 +275,10 @@ namespace TransitTimetables
                     ? EntityManager.GetComponentData<CustomPeakSchedule>(line) : CustomPeakSchedule.Default(); // PR #5 per-line peak
                 TransportLine tl = EntityManager.GetComponentData<TransportLine>(line);
 
-                if (!sch.m_Enabled)
+                // Master switch OFF => treat EVERY line as un-timetabled: run the same "hand back to vanilla" path as a
+                // line whose schedule is switched off (release held buses, clear the fleet policy, restore unbunching),
+                // without clearing the user's per-line timetable config. Re-enabling resumes exactly where it left off.
+                if (!s.Enabled || !sch.m_Enabled)
                 {
                     RestoreUnbunching(line, tl);
                     if (m_LastFleet.ContainsKey(line))
@@ -227,16 +294,30 @@ namespace TransitTimetables
                     m_LastFleet.Remove(line);
                     m_PendingRetire.Remove(line);
                     m_LapServed.Remove(line);
-                    // Reset the loop-time measurement so a re-enabled line measures fresh (its route may have changed).
+                    // Drop the LIVE loop-time measurement. NOTE: since the measurement is now persisted in
+                    // LineMeasuredTravel (which is deliberately NOT removed here, so it survives a pause), re-enabling
+                    // re-seeds these from the component rather than measuring from scratch — intentional. If the route
+                    // changed while disabled, the stale value self-heals via the existing reject/re-anchor path.
                     m_LapFront.Remove(line);
                     m_LineLoopEma.Remove(line);
                     m_LineLoopSamples.Remove(line);
                     m_LineLoopMin.Remove(line);
                     m_LineRejectStreak.Remove(line);
+                    m_LastDur.Remove(line);
+                    m_DurStable.Remove(line);
+                    m_LastSlotFrame.Remove(line);
                     continue;
                 }
                 anyEnabled = true;
                 enabledCount++;
+
+                // Rehydrate the measured loop from the persisted component the first time we see this line with empty
+                // in-memory measurement (fresh load, or a re-enabled line), so LineCorrection/fleet use the real learned
+                // loop immediately instead of the cold density prior. And ensure the component exists (deferred add) so
+                // the mirror below has somewhere to write.
+                RehydrateMeasured(line);
+                if (!EntityManager.HasComponent<LineMeasuredTravel>(line))
+                    ecb.AddComponent<LineMeasuredTravel>(line);
 
                 // (2) Leave TransportLine.m_UnbunchingFactor at the PREFAB DEFAULT — and heal it if an older version
                 // of this mod zeroed it.
@@ -292,18 +373,58 @@ namespace TransitTimetables
                 // TrySetLineFleet only touches the buffer when the value actually differs, so this is cheap.
                 int desiredFleet = 0;
                 float durUnits = m_Fleet.LineStableDurationUnits(line);
-                if (durUnits > 1f)
+                // Vehicle-count management is OPT-OUT (compat with dedicated fleet mods that write the same per-line
+                // VehicleInterval modifier — e.g. All Transit + Truck). When ManageVehicleCount is OFF we never size the
+                // fleet; a line we WERE sizing is handed back to vanilla / the other mod EXACTLY ONCE (m_LastFleet-gated,
+                // same one-time hand-back as the disable branch) and then left alone, so we can't fight the other mod
+                // every tick. The departure HOLD below is independent of the count and still runs. (durUnits is still
+                // computed above — MeasureLap needs it regardless.)
+                if (!s.ManageVehicleCount)
                 {
-                    int interval = ScheduleMath.IntervalFor(s, sch, customSch, nowMin, sched);
-                    // Phase 2: size the fleet to the REAL loop when the player opts in (costs money); otherwise the
-                    // estimate, exactly as before. LineCorrection is grow-only for fleet; kFleetCap is the hard backstop.
-                    float fleetUnits = s.ProvisionRealFleet ? durUnits * LineCorrection(line, durUnits, forFleet: true) : durUnits;
-                    desiredFleet = ScheduleMath.DerivedFleet(fleetUnits, interval, m_Um);
-                    // Cap only guards a bad CORRECTION reading, which can only occur under ProvisionRealFleet; gating it
-                    // there keeps the both-settings-OFF path bit-identical to before (an uncorrected line stays uncapped).
-                    if (s.ProvisionRealFleet && desiredFleet > kFleetCap) desiredFleet = kFleetCap;
-                    if (m_Fleet.TrySetLineFleet(line, desiredFleet))
-                        m_LastFleet[line] = desiredFleet;
+                    if (m_LastFleet.ContainsKey(line))
+                    {
+                        m_Fleet.TryClearLineFleet(line);
+                        m_LastFleet.Remove(line);
+                    }
+                }
+                else if (durUnits > 1f)
+                {
+                    // Flood-on-load guard (see m_LastDur): only size once the duration estimate has held steady (within
+                    // 5%) for kDurStableTicks consecutive ticks. Right after a load it spikes then settles; requiring
+                    // agreement across ticks skips the spike so we never write the inflated count. In steady state the
+                    // estimate barely moves, so this passes immediately and sizing behaves exactly as before.
+                    float prevDur = m_LastDur.TryGetValue(line, out float pd) ? pd : 0f;
+                    m_LastDur[line] = durUnits;
+                    bool agrees = prevDur > 1f && durUnits >= prevDur * 0.95f && durUnits <= prevDur * 1.05f;
+                    int stable = agrees ? (m_DurStable.TryGetValue(line, out int sc) ? sc : 0) + 1 : 0;
+                    m_DurStable[line] = stable;
+                    {
+                        int interval = ScheduleMath.IntervalFor(s, sch, customSch, nowMin, sched);
+                        // Phase 2: size the fleet to the REAL loop when the player opts in (costs money); otherwise the
+                        // estimate, exactly as before. LineCorrection is grow-only for fleet; kFleetCap is the hard backstop.
+                        float fleetUnits = s.ProvisionRealFleet ? durUnits * LineCorrection(line, durUnits, forFleet: true) : durUnits;
+                        desiredFleet = ScheduleMath.DerivedFleet(fleetUnits, interval, m_Um);
+                        // Hard sanity cap on EVERY path. It was previously gated behind ProvisionRealFleet (the correction
+                        // being the only assumed source of a bad number), which left the DEFAULT estimate path uncapped —
+                        // so if a post-load inflated duration ever holds steady long enough to satisfy the stability gate
+                        // above, nothing bounded the resulting count. The cap is far above any legitimate line's needs, so
+                        // it never binds in normal play; it exists purely so a bad reading can't flood a city with buses.
+                        if (desiredFleet > kFleetCap) desiredFleet = kFleetCap;
+                        // CRITICAL: desiredFleet must be computed on EVERY tick, NOT only when the stability gate passes.
+                        // The drain below derives `surplus` from it, and when desiredFleet is 0 surplus is forced to 0,
+                        // which SKIPS THE WHOLE DRAIN BLOCK — including the branch that strips vanilla's AbandonRoute off
+                        // a mid-route bus (DESIGN DECISION B). Leaving it unset during an unstable-estimate tick therefore
+                        // let vanilla retire buses wherever they stood: buses visibly VANISHING mid-route (live-reported).
+                        // So only the fleet WRITE is gated on stability; the target itself is always derived.
+                        if (stable >= kDurStableTicks && m_Fleet.TrySetLineFleet(line, desiredFleet))
+                            m_LastFleet[line] = desiredFleet;
+                        else if (m_LastFleet.TryGetValue(line, out int heldFleet))
+                            // The write was suppressed (estimate still settling) but the line already carries a count we
+                            // wrote earlier. The drain MUST reason about the number vanilla is actually acting on, not the
+                            // one we would like: otherwise our surplus is computed against a target vanilla never saw, and
+                            // the two fight — we retire a bus while vanilla buys one back (and vice versa).
+                            desiredFleet = heldFleet;
+                    }
                 }
 
                 // (3) terminus = timing point + retirement anchor (player-chosen stop, or the first stop)
@@ -311,6 +432,9 @@ namespace TransitTimetables
 
                 // Accumulate this line's measured loop time from terminus front-vehicle changes (feeds LineCorrection).
                 MeasureLap(line, terminusStop, frame, durUnits);
+                // Persist the freshly-updated measurement into the line's component so it survives save/load (no-op until
+                // the component exists — added via the ECB above — and only writes when a value actually changed).
+                MirrorMeasured(line);
 
                 // (3-pre) FORCE STOPS: make our buses actually pull in and STOP rather than let vanilla skip a stop
                 // where nobody boards or alights — ALWAYS at the terminus (skipping it strands the whole schedule), and
@@ -366,22 +490,14 @@ namespace TransitTimetables
                     // Is a bus boarding the terminus right now as the timing-point front? While one is, this slot's
                     // departure is covered — it holds the single boarding spot until its scheduled time — so extras may
                     // retire without skipping a departure. No front boarding => hold off, let a bus flow through first.
-                    bool slotCovered = false;
-                    if (terminusStop != Entity.Null && EntityManager.HasComponent<BoardingVehicle>(terminusStop))
-                    {
-                        Entity frontVeh = EntityManager.GetComponentData<BoardingVehicle>(terminusStop).m_Vehicle;
-                        if (frontVeh != Entity.Null && EntityManager.HasComponent<PublicTransport>(frontVeh))
-                        {
-                            PublicTransport fpt = EntityManager.GetComponentData<PublicTransport>(frontVeh);
-                            slotCovered = (fpt.m_State & PublicTransportFlags.Boarding) != 0
-                                       && (fpt.m_State & PublicTransportFlags.EnRoute) != 0;
-                        }
-                    }
+                    // NOTE: slotCovered is computed AFTER pass 1 (below), because it must verify the boarding vehicle
+                    // belongs to THIS line, and pass 1 is what builds that set.
 
                     // Pass 1: count live buses and mark lap-eligibility. A bus whose current target is NOT the terminus
                     // has left the terminus and is serving the loop, so it has earned a retirement on its next return.
                     HashSet<Entity> live = new HashSet<Entity>();
                     int liveCount = 0;
+                    int flaggedCount = 0; // vehicles vanilla has already marked for retirement (see protectFromCull)
                     for (int v = 0; v < vehicles.Length; v++)
                     {
                         Entity veh = vehicles[v].m_Vehicle;
@@ -390,6 +506,8 @@ namespace TransitTimetables
                         live.Add(veh);
                         m_LiveVehScratch.Add(veh); // union of all live vehicles -> prunes m_RunSlotFrame after the loop
                         liveCount++;
+                        if ((EntityManager.GetComponentData<PublicTransport>(veh).m_State & PublicTransportFlags.AbandonRoute) != 0)
+                            flaggedCount++;
                         // Arrival stamp for HoldStop's min-dwell: presence in m_ArrivedFrame == "currently boarding,
                         // arrived at this frame". Stamp on the first boarding tick; drop when it leaves the stop so the
                         // next stop (or the same stop next loop) re-stamps a fresh arrival.
@@ -402,66 +520,137 @@ namespace TransitTimetables
                             && EntityManager.GetComponentData<Target>(veh).m_Target != terminusWaypoint)
                             lapServed.Add(veh);
                     }
+                    // Is a bus of OURS boarding the terminus right now as the timing-point front? While one is, this
+                    // slot's departure is covered — it holds the single boarding spot until its scheduled time — so
+                    // extras may retire without skipping a departure.
+                    //
+                    // The `live.Contains` test is LOAD-BEARING and was missing: a terminus stop can be SHARED with other
+                    // lines, and its single BoardingVehicle slot may hold a FOREIGN line's bus. Without the check we read
+                    // another line's bus as "our slot is covered" and retired one of ours while our own next departure
+                    // had nobody to run it — live-reported as "buses retire without another bus boarding the stop".
+                    // (HoldStop already applies exactly this lineVehicles guard before writing a departure frame.)
+                    bool slotCovered = false;
+                    if (terminusStop != Entity.Null && EntityManager.HasComponent<BoardingVehicle>(terminusStop))
+                    {
+                        Entity frontVeh = EntityManager.GetComponentData<BoardingVehicle>(terminusStop).m_Vehicle;
+                        if (frontVeh != Entity.Null && live.Contains(frontVeh)
+                            && EntityManager.HasComponent<PublicTransport>(frontVeh))
+                        {
+                            PublicTransport fpt = EntityManager.GetComponentData<PublicTransport>(frontVeh);
+                            slotCovered = (fpt.m_State & PublicTransportFlags.Boarding) != 0
+                                       && (fpt.m_State & PublicTransportFlags.EnRoute) != 0;
+                        }
+                    }
+
                     int surplus = desiredFleet > 0 ? liveCount - desiredFleet : 0;
 
                     if (diagLog)
                         Mod.log.Info($"[SelfTest] fleet line#{line.Index} now={nowMin}m live={liveCount} target={desiredFleet} surplus={surplus} slotCovered={slotCovered} pending={pending.Count} forced={forcedStops}");
 
-                    if (surplus <= 0)
+                    // Stale-latch repair. `pending` used to be cleared ONLY when surplus hit 0, so buses latched while the
+                    // surplus was larger stayed latched after it shrank — observed live as pending=8 against surplus=4 —
+                    // leaving more buses retirement-eligible than the line is actually over target, i.e. retiring BELOW
+                    // target. Rebuild it instead: if it holds more than the current surplus, drop the lot and re-latch
+                    // this tick from whatever vanilla currently flags. Safe now that the mid-route strip below is
+                    // unconditional — a dropped member that still carries the flag gets unflagged on this same pass.
+                    // Drop buses that already left the line BEFORE comparing against the surplus — otherwise, on the tick
+                    // a retired bus finally leaves the RouteVehicle buffer, a stale entry makes pending.Count exceed the
+                    // surplus and wipes the whole latch, dropping the commit of a bus that was one boarding away from
+                    // retiring. (`live` is complete here: pass 1 has run.)
+                    pending.RemoveWhere(e => !live.Contains(e));
+                    if (surplus < 0) surplus = 0;
+                    if (pending.Count > surplus) pending.Clear();
+
+                    // MAY we strip vanilla's retirement flag at all this tick? Two states where the answer is NO, both of
+                    // which would otherwise leave a line UNABLE TO EVER SHED A VEHICLE (the strip below runs every 8
+                    // frames and would simply undo vanilla forever):
+                    //
+                    //  1. desiredFleet == 0 — we have NO OPINION about this line's size: "Manage vehicle count" is off
+                    //     (the 0.3.5 opt-out that hands counts to a dedicated fleet mod), or the duration estimate has
+                    //     not resolved. Stripping here would silently break that interop by pinning the fleet forever.
+                    //  2. vanilla has flagged EVERY live vehicle — that is not a surplus cull but a LINE SHUTDOWN
+                    //     (TransportLineSystem zeroes the target for an Inactive line, a line with no active buildings,
+                    //     or a day-only line at night, then abandons the whole fleet in one pass). Legitimate: the line
+                    //     is meant to stop running, so a day-only line must not be kept circulating all night.
+                    //
+                    // Self-detecting on purpose: it reads what vanilla actually DID rather than trying to re-derive when
+                    // vanilla considers a line inactive (its hardcoded night does NOT match this mod's configurable
+                    // night window, so re-deriving would disagree and surrender buses at the wrong time).
+                    //  3. there is no cull of ours actually in progress (no surplus and nothing latched) — then vanilla is
+                    //     flagging for a reason we do not model (a vehicle-MODEL change retires mismatched vehicles
+                    //     regardless of count, for one), and overruling it would strand those vehicles on the line
+                    //     forever. We only ever defend a surplus we ourselves identified.
+                    bool protectFromCull = desiredFleet > 0 && flaggedCount < liveCount
+                                           && (surplus > 0 || pending.Count > 0);
+
+                    // *** THE LOOP RUNS UNCONDITIONALLY — it is NOT inside an `if (surplus > 0)` guard. ***
+                    // It used to be, which meant that whenever a line sat AT or UNDER target (surplus <= 0) the mod
+                    // stopped stripping vanilla's AbandonRoute from mid-route buses entirely — so vanilla retired them
+                    // wherever they stood and they VANISHED MID-ROUTE (live-reported). Same hole when `pending` was
+                    // over-full: a flagged bus failed the latch, hit `continue`, and never got unflagged. DESIGN
+                    // DECISION B only holds if the strip is reachable in EVERY state, so `pending`/`surplus` now gate
+                    // ONLY the assert, never the protection.
+                    for (int v = 0; v < vehicles.Length; v++)
                     {
-                        pending.Clear(); // at/under target — nothing to retire; forget any latched buses
-                    }
-                    else
-                    {
-                        for (int v = 0; v < vehicles.Length; v++)
+                        Entity veh = vehicles[v].m_Vehicle;
+                        if (veh == Entity.Null || !EntityManager.HasComponent<PublicTransport>(veh))
+                            continue;
+                        PublicTransport pt = EntityManager.GetComponentData<PublicTransport>(veh);
+                        bool flagged = (pt.m_State & PublicTransportFlags.AbandonRoute) != 0;
+                        if (flagged && surplus > 0 && pending.Count < surplus)
+                            pending.Add(veh); // the game wants this one gone — latch it (bounded by live surplus)
+                        // Final approach: not boarding and its target is the terminus (last leg of the loop).
+                        bool onFinalApproach = (pt.m_State & PublicTransportFlags.Boarding) == 0
+                            && EntityManager.HasComponent<Target>(veh)
+                            && EntityManager.GetComponentData<Target>(veh).m_Target == terminusWaypoint;
+                        // Retire only once a bus OF OURS is covering this slot's departure (so we never retire the bus
+                        // the terminus needs to send out next). m_Committed carries that decision across the brief gaps
+                        // when no front is boarding: it replaces the old `flagged ||` arm, which let ANY vanilla-flagged
+                        // bus through without consulting slotCovered at all — the second half of the "retires with
+                        // nothing covering the slot" report.
+                        //
+                        // *** DESIGN DECISION B (see the header) — deliberate. Clearing vanilla's AbandonRoute on a
+                        // mid-route bus is the POINT, not an oversight: it makes the surplus finish its loop and
+                        // drop its passengers at the terminus instead of vanishing wherever it happened to be.
+                        // The deferral reliably wins the race — this system runs every 8 frames, the AI that
+                        // CONSUMES the flag (StartBoarding) every 16, and vanilla re-flags surplus only every 256,
+                        // so there are always two of our ticks between AI ticks. ***
+                        bool commit = pending.Contains(veh) && onFinalApproach && lapServed.Contains(veh)
+                                      && (slotCovered || m_Committed.Contains(veh));
+                        if (commit)
                         {
-                            Entity veh = vehicles[v].m_Vehicle;
-                            if (veh == Entity.Null || !EntityManager.HasComponent<PublicTransport>(veh))
-                                continue;
-                            PublicTransport pt = EntityManager.GetComponentData<PublicTransport>(veh);
-                            bool flagged = (pt.m_State & PublicTransportFlags.AbandonRoute) != 0;
-                            if (flagged && pending.Count < surplus)
-                                pending.Add(veh); // the game wants this one gone — latch it (bounded by live surplus)
-                            if (!pending.Contains(veh))
-                                continue;
-                            // Final approach: not boarding and its target is the terminus (last leg of the loop).
-                            bool onFinalApproach = (pt.m_State & PublicTransportFlags.Boarding) == 0
-                                && EntityManager.HasComponent<Target>(veh)
-                                && EntityManager.GetComponentData<Target>(veh).m_Target == terminusWaypoint;
-                            // Retire only once a front bus is covering this slot's departure (so we never retire the bus
-                            // the terminus needs to send out next). Once a bus on final approach is flagged we KEEP it
-                            // flagged (commit) even across the brief no-front gaps; a bus still out on the loop is
-                            // deferred (flag cleared) and keeps serving.
-                            //
-                            // *** DESIGN DECISION B (see the header) — deliberate. Clearing vanilla's AbandonRoute on a
-                            // mid-route bus is the POINT, not an oversight: it makes the surplus finish its loop and
-                            // drop its passengers at the terminus instead of vanishing wherever it happened to be.
-                            // The deferral reliably wins the race — this system runs every 8 frames, the AI that
-                            // CONSUMES the flag (StartBoarding) every 16, and vanilla re-flags surplus only every 256,
-                            // so there are always two of our ticks between AI ticks. ***
-                            if (onFinalApproach && lapServed.Contains(veh) && (flagged || slotCovered))
+                            // Record the commit for ANY committed bus, not only the one we assert on this tick: a bus
+                            // vanilla had already flagged would otherwise never enter m_Committed, so the moment
+                            // slotCovered flickered false it would fall to the strip branch and be un-retired.
+                            m_Committed.Add(veh);
+                            if (!flagged) // lap done, back at the terminus, slot covered — assert; vanilla retires it here
                             {
-                                if (!flagged) // lap done, back at the terminus, slot covered — assert; vanilla retires it here
-                                {
-                                    pt.m_State |= PublicTransportFlags.AbandonRoute;
-                                    EntityManager.SetComponentData(veh, pt);
-                                    Mod.log.Info($"[SelfTest] retire line#{line.Index} veh#{veh.Index} now={nowMin}m live={liveCount} target={desiredFleet}");
-                                }
-                            }
-                            else if (flagged) // mid-route, or slot not yet covered — defer: keep it serving
-                            {
-                                pt.m_State &= ~PublicTransportFlags.AbandonRoute;
+                                pt.m_State |= PublicTransportFlags.AbandonRoute;
                                 EntityManager.SetComponentData(veh, pt);
+                                if (diagLog) // was logged every tick: one bus produced 11 identical lines in 13 game-minutes
+                                    Mod.log.Info($"[SelfTest] retire line#{line.Index} veh#{veh.Index} now={nowMin}m live={liveCount} target={desiredFleet}");
                             }
                         }
-                        pending.RemoveWhere(e => !live.Contains(e)); // drop buses that already retired / left the line
+                        else if (flagged && protectFromCull) // mid-route, not lapped, or slot not covered — keep it serving
+                        {
+                            // Gated by protectFromCull (see above): we only overrule vanilla when we actually manage this
+                            // line's size AND vanilla is culling a surplus rather than shutting the whole line down.
+                            pt.m_State &= ~PublicTransportFlags.AbandonRoute;
+                            EntityManager.SetComponentData(veh, pt);
+                            m_Committed.Remove(veh);
+                        }
                     }
+                    pending.RemoveWhere(e => !live.Contains(e)); // drop buses that already retired / left the line
                     lapServed.RemoveWhere(e => !live.Contains(e)); // forget buses no longer on the line
                 }
 
                 if (sample == null)
                     sample = $"line#{line.Index} sched{sched} every {ScheduleMath.IntervalFor(s, sch, customSch, nowMin, sched)}m";
             }
+
+            // Apply the deferred component adds now that the per-line loop (and its live handles) is done.
+            ecb.Playback(EntityManager);
+            ecb.Dispose();
 
             // Prune tracking entries for lines that left the query (e.g. bulldozed while enabled) so they don't leak.
             m_LiveScratch.Clear();
@@ -474,12 +663,16 @@ namespace TransitTimetables
             PruneToLive(m_LineLoopSamples, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_LineLoopMin, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_LineRejectStreak, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_LastDur, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_DurStable, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_LastSlotFrame, m_LiveScratch, m_StaleScratch);
             // Drop per-vehicle slots for buses that despawned/retired (m_LiveVehScratch = every live vehicle this tick).
             PruneToLive(m_RunSlotFrame, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_ArrivedFrame, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_VehTerminusDepart, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_VehLastRecordedStop, m_LiveVehScratch, m_StaleScratch);
             m_VehHeld.RemoveWhere(v => !m_LiveVehScratch.Contains(v));
+            m_Committed.RemoveWhere(v => !m_LiveVehScratch.Contains(v)); // retired/despawned buses drop their commit
             // Per-stop offsets are keyed by waypoint (not line); drop entries whose waypoint no longer exists (route
             // edited / line deleted). Periodic (aligned with the [SelfTest] cadence) so it's a cheap occasional scan.
             if (frame - m_LastLog >= 16384 && m_StopOffsetSamples.Count > 0)
@@ -564,6 +757,20 @@ namespace TransitTimetables
                 : null;
 
             bool useMeasured = s.RealisticTravelTime;
+            // KNOWN ISSUE, deliberately NOT fixed here — read before "fixing" it. Offsets are picked PER STOP: measured
+            // once a stop has kMinTrustSamples samples, else the raw pathfinder estimate. On a line whose real loop is
+            // ~3x the estimate that interleaves two incompatible clocks on one route (live-observed posted sequence
+            // …,35,85,20,144,30,… where the small values are estimate stops and the spikes measured ones), and every
+            // observed hold-clamp release was at a far MEASURED stop while near estimate stops held fine.
+            //
+            // Scaling the estimate fallback by the line's measured LineCorrection looks like the obvious fix and was
+            // implemented, reviewed, and REVERTED, because it: (1) makes the printed board disagree with the buses by up
+            // to ~45 min — TransitParamsUISystem derives its own offsets and applies no such scale, so the fix must
+            // publish the offsets the dispatch actually used and have the UI read THOSE; (2) flips the sign at estimate
+            // stops — until = est*(corr - localRatio), so stops whose local ratio is below the line average would begin
+            // clamping when they previously never could, i.e. it can produce MORE clamps than it removes; and (3) a
+            // monotonicity ratchet added alongside it forced offMin >= waypointIndex, which on a stop-dense line can
+            // exceed the real loop. Any real fix needs the UI plumbing plus a tested build.
             float offUnits = 0f;
             for (int j = 0; j < len; j++)
             {
@@ -596,7 +803,7 @@ namespace TransitTimetables
                         // Learn this stop's real arrival offset from the (our-line, upstream-unheld) boarding bus.
                         if (j >= 1)
                             RecordStopOffset(line, wp, bveh, lineVehicles, frame);
-                        HoldStop(s, sch, customSch, sched, stop, frame, nowMin, offMin, stop == terminusStop, lineVehicles, lapServed, diag);
+                        HoldStop(s, sch, customSch, sched, line, stop, frame, nowMin, offMin, stop == terminusStop, lineVehicles, lapServed, diag);
                     }
                 }
                 if (diag != null && !boarding)
@@ -625,7 +832,7 @@ namespace TransitTimetables
         // The m_DepartureFrame bump is honored at all stops per TransportCarAISystem.StopBoarding (line ~1265: while
         // frame < m_DepartureFrame the boarding vehicle stays), not just the terminus.
         // When diag != null, appends this stop's decision (or skip reason) to the route's [SelfTest] dump.
-        private void HoldStop(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int sched, Entity stop, uint frame, int nowMin,
+        private void HoldStop(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int sched, Entity line, Entity stop, uint frame, int nowMin,
             int offMin, bool isTerminus, HashSet<Entity> lineVehicles, HashSet<Entity> lapServed, System.Text.StringBuilder diag)
         {
             string tag = isTerminus ? "T" : "";
@@ -648,8 +855,14 @@ namespace TransitTimetables
             // interval. The slot is a monotonic sim FRAME (no midnight-wrap ambiguity), recorded when the bus boards
             // the terminus and read as-is at every downstream stop of the same run.
             int maxInterval = ScheduleMath.MaxInterval(sch, customSch, sched);
+            // Minimum stand time for a vehicle that arrives on time or late, split road vs rail (trams, metros and
+            // trains all carry the Train component; ferries/aircraft fall to the road value). Both default to
+            // kMinDwellMinutes, the value this replaced, so an untouched setting is bit-identical to before.
+            int minDwellCfg = EntityManager.HasComponent<Game.Vehicles.Train>(veh) ? s.MinDwellRail : s.MinDwellRoad;
+            if (minDwellCfg < 0) minDwellCfg = 0;
             bool haveSlot = m_RunSlotFrame.TryGetValue(veh, out uint slotFrame);
-            string slotSrc;
+            string slotSrc = "keep"; // reassigned below on every path; init only to satisfy definite-assignment (catch-up branch)
+            bool slotless = false; // bus with no terminus slot yet (spawned mid-route): min-dwell and GO, don't hold (#1/#6)
             if (isTerminus)
             {
                 // The terminus is the anchor. (Re)assign the next scheduled departure when the bus has no slot yet, or
@@ -661,18 +874,88 @@ namespace TransitTimetables
                 if (!haveSlot || (lapped && frame >= slotFrame))
                 {
                     int untilNext = ScheduleMath.NextDeparture(s, sch, customSch, sched, nowMin) - nowMin; // minutes to next slot
-                    if (untilNext >= 0 && untilNext <= maxInterval)
+                    int interval = ScheduleMath.IntervalFor(s, sch, customSch, nowMin, sched);            // active headway (hysteresis base)
+
+                    // MISSED-TRIP CATCH-UP: has a scheduled slot passed UNCOVERED since this line last dispatched? If so,
+                    // and the next slot is far enough not to bunch, min-dwell and GO now to fill the gap instead of idling
+                    // to that next slot — otherwise a long-headway line stacks buses at the terminus while it runs empty.
+                    bool caughtUp = false;
+                    if (m_LastSlotFrame.TryGetValue(line, out uint lastSlot))
                     {
-                        slotFrame = frame + (uint)(untilNext * m_Fpm);
-                        m_RunSlotFrame[veh] = slotFrame;
-                        slotSrc = "asg";
+                        int prevAbs = ScheduleMath.PreviousDeparture(s, sch, customSch, sched, nowMin);
+                        // A real, RECENT past slot (within one headway) — never a slot from before an off-service gap.
+                        if (prevAbs != int.MinValue && nowMin - prevAbs <= maxInterval)
+                        {
+                            long prevFrame = (long)frame - (long)((nowMin - prevAbs) * m_Fpm);    // frame that past slot fell at
+                            // "Strictly newer than our last claim". The epsilon must exceed the sub-minute jitter between
+                            // the two reconstructions: nowMin truncates the fractional minute, so the SAME slot can rebuild
+                            // up to a minute apart from the frame stored by the asg path. A full minute is the tight bound
+                            // (real distinct slots are >= one headway apart, and the min dwell is already 2 minutes).
+                            // +1 because the cast truncates m_Fpm (182.04 -> 182) while the same-slot re-derivation
+                            // spread reaches the full 182.04 — without it a sliver of that range fires a false catch-up.
+                            bool uncovered = prevFrame - (long)lastSlot > (long)m_Fpm + 2;
+                            // The bus will not actually leave for cuDwell minutes, so the gap it really closes is
+                            // (untilNext - cuDwell). Comparing the raw untilNext overstates the benefit and lets a
+                            // catch-up fire that lands almost on top of the next scheduled departure.
+                            int cuDwell = System.Math.Min(minDwellCfg, maxInterval);
+                            bool farEnough = untilNext - cuDwell > interval * kCatchUpMinNextLeadFrac;
+                            if (uncovered && farEnough)
+                            {
+                                // Depart a min-dwell from NOW (like an on-slot/late bus): a near-future frame, not `frame`.
+                                slotFrame = frame + (uint)(cuDwell * m_Fpm);
+                                m_RunSlotFrame[veh] = slotFrame;
+                                m_LastSlotFrame[line] = prevFrame > 0 ? (uint)prevFrame : frame;   // claim the slot we just covered
+                                // Clear the lap flag so the reassignment gate above ((lapped && frame >= slotFrame)) does
+                                // NOT re-fire while this bus is still boarding out its catch-up dwell. Without this, the
+                                // moment `frame` reaches the (near-future) catch-up slot the bus re-enters this branch,
+                                // finds the slot now covered, and is re-assigned to the NEXT scheduled slot — holding it a
+                                // full headway and silently undoing the catch-up. The drain only re-adds to lapServed once
+                                // the bus is away from the terminus (Target != terminusWaypoint), so this cannot strand it.
+                                lapServed?.Remove(veh);
+                                slotSrc = "catchup";
+                                caughtUp = true;
+                                // Log UNCONDITIONALLY (not only in the periodic route dump). A catch-up lasts a single
+                                // tick, so the every-16384-frame dump almost never samples one — during live testing the
+                                // feature looked like it had never fired when in fact we simply could not see it.
+                                if (frame - m_LastCatchUpLog >= 2048u) // throttled: bus-lap-bounded, but a large city still logs a lot
+                                {
+                                    m_LastCatchUpLog = frame;
+                                    Mod.log.Info($"[SelfTest] catchup line#{line.Index} veh#{veh.Index} now={nowMin}m " +
+                                                 $"missedSlot={ScheduleMath.FormatHm(prevAbs)} nextIn={untilNext}m interval={interval}m");
+                                }
+                            }
+                            else if (uncovered)
+                            {
+                                // A slot WAS missed but the hysteresis blocked the catch-up (the next departure is too
+                                // close, so going now would bunch). Logged too: it tells us the detector is working even
+                                // when it declines, which is what distinguishes "never triggers" from "triggers and is
+                                // correctly conservative" while tuning kCatchUpMinNextLeadFrac.
+                                if (diag != null) // throttled to the [SelfTest] dump cadence: the skip path can repeat
+                                {
+                                    Mod.log.Info($"[SelfTest] catchup-skip line#{line.Index} veh#{veh.Index} now={nowMin}m " +
+                                                 $"missedSlot={ScheduleMath.FormatHm(prevAbs)} nextIn={untilNext}m interval={interval}m (too close)");
+                                }
+                            }
+                        }
                     }
-                    else
+
+                    if (!caughtUp)
                     {
-                        // No usable slot soon (operating-window edge): don't latch a far/garbage slot — release now.
-                        m_RunSlotFrame.Remove(veh);
-                        slotFrame = frame;
-                        slotSrc = "edge";
+                        if (untilNext >= 0 && untilNext <= maxInterval)
+                        {
+                            slotFrame = frame + (uint)(untilNext * m_Fpm);
+                            m_RunSlotFrame[veh] = slotFrame;
+                            // Claim this (future) slot so the next bus doesn't read it as missed. Monotonic: never regress.
+                            if (!m_LastSlotFrame.TryGetValue(line, out uint cur) || slotFrame > cur) m_LastSlotFrame[line] = slotFrame;
+                            slotSrc = "asg";
+                        }
+                        else
+                        {
+                            // No usable slot soon (operating-window edge): don't latch a far/garbage slot — release now.
+                            m_RunSlotFrame.Remove(veh);
+                            slotFrame = frame;
+                            slotSrc = "edge";
+                        }
                     }
                 }
                 else slotSrc = "keep";
@@ -686,11 +969,18 @@ namespace TransitTimetables
             }
             else
             {
-                // Downstream bus with no slot yet (spawned mid-line, or the first tick after enabling): fall back to
-                // the old next-slot-after-now guess. Self-corrects the next time this bus boards the terminus.
-                int g = ScheduleMath.NextDeparture(s, sch, customSch, sched, nowMin - offMin) + offMin - nowMin;
-                slotFrame = frame + (uint)((g > 0 ? g : 0) * m_Fpm);
-                slotSrc = "guess";
+                // Downstream bus with NO terminus slot yet. It entered the loop MID-ROUTE: the game spawns a new line
+                // vehicle at the nearest reachable waypoint from the depot (SetupTargetType.RouteWaypoints), NOT at the
+                // terminus, then flags it EnRoute — so it has never anchored on the timetable grid. (Same for the first
+                // tick after enabling, or a cleared slot.) Older code GUESSED "next terminus departure projected to
+                // here" and HELD to it, which parked a mid-route bus at a random interior stop for up to a full headway
+                // and bunched everything behind it — issue #1's "long waits at regular stops", which are exactly these
+                // mid-route spawns. Instead: DON'T follow the timetable yet. Flag it slot-less so the target computation
+                // gives it a plain min-dwell and releases it; it picks up its real slot the first time it boards the
+                // terminus and self-corrects within one loop. This also makes "Provision fleet for real travel time"
+                // safe to leave on, since the extra vehicles it adds are precisely these mid-route entrants.
+                slotless = true;
+                slotSrc = "slotless";
             }
 
             // DEPARTURE TARGET. A bus departs at:
@@ -702,9 +992,11 @@ namespace TransitTimetables
             // is the frame the bus started boarding this stop (m_ArrivedFrame, stamped in the drain); fall back to now
             // for the first tick before the stamp lands. Dwell is capped at one headway so a sub-2-min line can't jam.
             uint arrived = m_ArrivedFrame.TryGetValue(veh, out uint af) ? af : frame;
-            int dwellMin = System.Math.Min(kMinDwellMinutes, maxInterval);
-            uint target = arrived < slotFrame ? slotFrame : arrived + (uint)(dwellMin * m_Fpm);
-            bool dwelling = arrived >= slotFrame; // holding for the min-dwell, not for an early slot (diagnostics only)
+            int dwellMin = System.Math.Min(minDwellCfg, maxInterval);
+            // A slot-less bus never snaps to the grid: give it a plain min-dwell then GO, exactly like the on-slot/late
+            // branch (slotFrame is 0/unused here). Otherwise: depart at the slot if early, else min-dwell then GO.
+            uint target = (slotless || arrived >= slotFrame) ? arrived + (uint)(dwellMin * m_Fpm) : slotFrame;
+            bool dwelling = slotless || arrived >= slotFrame; // min-dwell (not an early-slot hold); excluded from m_VehHeld
 
             long dframes = (long)target - frame;                                    // >0 -> hold/dwell; <=0 -> depart
             int until = (int)System.Math.Round((double)dframes / m_Fpm);
@@ -860,6 +1152,80 @@ namespace TransitTimetables
         // span (departure -> arrival = travel + intermediate dwells, EXCLUDING the terminus hold) into the line's EMA.
         // Comparable apples-to-apples with the pathfinder estimate (ComputeStableDuration), which also excludes the
         // terminus hold. Reads the world only; the correction it feeds is applied elsewhere. See AcceptLoopSample.
+        // Seed the in-memory measurement dicts from the persisted LineMeasuredTravel component the first time a line is
+        // seen with no live measurement (fresh load, or a re-enabled line), so LineCorrection/fleet use the real learned
+        // loop immediately instead of the cold density prior. Values are raw sim FRAMES (day-length invariant), so they
+        // feed straight in; a stored count >= kMinTrustSamples is trusted at once, and any staleness (route changed while
+        // disabled) self-heals via the existing reject/re-anchor path. No-op if the dicts already hold data, or the
+        // component is absent or empty.
+        private void RehydrateMeasured(Entity line)
+        {
+            if (m_LineLoopSamples.ContainsKey(line)) return;                 // already have live/seeded data
+            if (!EntityManager.HasComponent<LineMeasuredTravel>(line)) return;
+            LineMeasuredTravel c = EntityManager.GetComponentData<LineMeasuredTravel>(line);
+            if (c.m_LoopSamples <= 0 || !(c.m_LoopEmaFrames > 0f)) return;   // nothing meaningful stored (also rejects NaN)
+            m_LineLoopEma[line] = c.m_LoopEmaFrames;
+            m_LineLoopMin[line] = c.m_LoopMinFrames > 0f ? c.m_LoopMinFrames : c.m_LoopEmaFrames;
+            m_LineLoopSamples[line] = c.m_LoopSamples;
+        }
+
+        // Write the current in-memory measurement back into the line's LineMeasuredTravel component so it survives
+        // save/load. Non-structural (SetComponentData on an existing component), and only when a value actually changed,
+        // to avoid churning the chunk version every tick. No-op until the component exists (added via the ECB in
+        // OnUpdate) or before the line has any loop sample.
+        private void MirrorMeasured(Entity line)
+        {
+            if (!EntityManager.HasComponent<LineMeasuredTravel>(line)) return;
+            if (!m_LineLoopSamples.TryGetValue(line, out int samples) || samples <= 0) return;
+            float ema = m_LineLoopEma.TryGetValue(line, out float e) ? e : 0f;
+            float min = m_LineLoopMin.TryGetValue(line, out float m) ? m : 0f;
+            ushort s = samples > ushort.MaxValue ? ushort.MaxValue : (ushort)samples;
+            LineMeasuredTravel cur = EntityManager.GetComponentData<LineMeasuredTravel>(line);
+            if (cur.m_LoopEmaFrames == ema && cur.m_LoopMinFrames == min && cur.m_LoopSamples == s) return; // unchanged
+            EntityManager.SetComponentData(line, new LineMeasuredTravel { m_LoopEmaFrames = ema, m_LoopMinFrames = min, m_LoopSamples = s });
+        }
+
+        // Clean uninstall (Options button): wipe every trace of the mod from the current save. For each timetabled line
+        // revert the mutated vanilla state (restore the unbunching factor, release any held bus, drop the mod-applied
+        // vehicle count) and REMOVE the mod's serialized components (TimetableSchedule, CustomPeakSchedule,
+        // LineMeasuredTravel), then forget all in-memory tracking. After this the save contains no mod data, so the
+        // player can save and remove the mod with zero residue. Structural removes go through an ECB (played back after
+        // the read pass). Safe to run with the mod still installed — the lines just go back to plain vanilla.
+        private void CleanUninstall(uint frame)
+        {
+            NativeArray<Entity> lines = m_LineQuery.ToEntityArray(Allocator.Temp);
+            EntityCommandBuffer ecb = new EntityCommandBuffer(Allocator.Temp);
+            int n = 0;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                Entity line = lines[i];
+                if (EntityManager.HasComponent<TransportLine>(line))
+                    RestoreUnbunching(line, EntityManager.GetComponentData<TransportLine>(line));
+                ReleaseHeldVehicles(line, frame);
+                // Repair rather than blind-clear. TryClearLineFleet would zero the VehicleInterval slot AND deactivate the
+                // vehicle-count policy on EVERY line — including lines this mod never sized (ManageVehicleCount off, or a
+                // count the player set by hand), silently wiping their own "Assigned Vehicles". The heal instead rebuilds
+                // the slot from the line's OWN active policies, so a mod-written orphan reverts to automatic while a
+                // genuine player/policy count is preserved. No-op on a line we never touched.
+                m_Fleet.TryHealLeftoverFleetModifier(line);
+                ecb.RemoveComponent<TimetableSchedule>(line);
+                if (EntityManager.HasComponent<CustomPeakSchedule>(line)) ecb.RemoveComponent<CustomPeakSchedule>(line);
+                if (EntityManager.HasComponent<LineMeasuredTravel>(line)) ecb.RemoveComponent<LineMeasuredTravel>(line);
+                n++;
+            }
+            ecb.Playback(EntityManager);
+            ecb.Dispose();
+            lines.Dispose();
+            // Forget ALL in-memory tracking so nothing re-applies to the now-vanilla lines.
+            m_LastFleet.Clear(); m_PendingRetire.Clear(); m_LapServed.Clear(); m_LapFront.Clear();
+            m_LineLoopEma.Clear(); m_LineLoopSamples.Clear(); m_LineLoopMin.Clear(); m_LineRejectStreak.Clear();
+            m_LastDur.Clear(); m_DurStable.Clear(); m_LastSlotFrame.Clear();
+            m_RunSlotFrame.Clear(); m_ArrivedFrame.Clear(); m_VehTerminusDepart.Clear(); m_VehLastRecordedStop.Clear();
+            m_VehHeld.Clear(); m_StopOffsetEma.Clear(); m_StopOffsetSamples.Clear(); m_Committed.Clear();
+            Mod.log.Info($"[SelfTest] clean uninstall: reverted {n} line(s) to vanilla and removed all mod components. " +
+                         "Save your city; the mod can now be removed with no residue.");
+        }
+
         private void MeasureLap(Entity line, Entity terminusStop, uint frame, float durUnits)
         {
             Entity curFront = Entity.Null;
@@ -1091,6 +1457,11 @@ namespace TransitTimetables
         {
             if (m_HealQuery.IsEmptyIgnoreFilter)
                 return;
+            // When the master switch is OFF, the dispatch loop manages NO line (every line takes the "hand back to
+            // vanilla" branch), so a still-timetabled line's leftover fleet modifier would otherwise be skipped by the
+            // `managed` guard below and never cleared on a disabled load. Treat master-off as "nothing managed".
+            Setting master = Mod.ActiveSetting;
+            bool masterOn = master != null && master.Enabled;
             NativeArray<Entity> lines = m_HealQuery.ToEntityArray(Allocator.Temp);
             int factorHealed = 0, fleetHealed = 0;
             for (int i = 0; i < lines.Length; i++)
@@ -1119,7 +1490,12 @@ namespace TransitTimetables
                 // immediately" after a plain uninstall. Skip lines we are ACTIVELY managing (an enabled timetable): the
                 // dispatch loop re-asserts their modifier this same tick, and TryHealLeftoverFleetModifier is safe by
                 // recomputing from the line's own policies (never clobbers a player's manual vehicle count).
-                bool managed = EntityManager.HasComponent<TimetableSchedule>(line)
+                // "managed" also requires ManageVehicleCount: with it OFF the dispatch loop does NOT re-assert the
+                // fleet modifier, so a still-timetabled line's leftover VehicleInterval residue (written while it was
+                // ON) must be healed on load instead of skipped — otherwise it freezes in the save (the issue-#7 class
+                // of bug the master-toggle review caught).
+                bool managed = masterOn && master.ManageVehicleCount
+                    && EntityManager.HasComponent<TimetableSchedule>(line)
                     && EntityManager.GetComponentData<TimetableSchedule>(line).m_Enabled;
                 if (!managed && m_Fleet.TryHealLeftoverFleetModifier(line))
                     fleetHealed++;
