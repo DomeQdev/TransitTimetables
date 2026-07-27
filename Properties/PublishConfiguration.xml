@@ -90,12 +90,6 @@ v0.3.3 — Fixed long waits at ordinary stops for vehicles the game drops onto t
 
 v0.3.2.2 — Auto-repair for leftover vehicle-interval data that stopped vehicles un-bunching after the mod was removed. Subscribe, load your city, save.
 
-v0.3.2 — Auto-repair for the older unbunching-factor residue left by pre-v0.2.3 builds.
-
-v0.3.1 — Vehicles now always stop at the terminus, so the scheduled wait that anchors the line is never skipped. Optional "stop at every stop".
-
-v0.3.0 (alpha) — Realistic travel time and fleet provisioning, both optional and off by default; per-line custom peak windows (thanks incconutwo).
-
 </ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
 	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />
