@@ -11,7 +11,8 @@ Turn any public-transport line into a scheduled service. Works for every passeng
 
 Per line you opt in and set:
 
-- a first departure time and peak / off-peak / night intervals (the peak windows are configurable),
+- a first departure time and peak / off-peak / night intervals (the global peak windows are configurable),
+- OR give a line its OWN peak hours: any line can override the global rush with two custom windows and its own peak interval, so a line serving a factory shift, a school run or a stadium can run its own rush hour while the rest of the network keeps to the city-wide one,
 - the mod then DERIVES how many vehicles the line needs to hold that headway, and raises the game's vehicle-count ceiling so the derived fleet is never clamped,
 - a terminus stop (timing point) where early vehicles are held to the scheduled departure, and where surplus vehicles retire — after finishing their loop and dropping passengers, not mid-route.
 
@@ -34,6 +35,8 @@ Recommended: for accurate timetables at no cost, turn on "Realistic travel time"
 KNOWN ISSUES:
 
 - "Vehicles no longer un-bunch after removing the mod." The mod writes two values into a line's save data — an "unbunching factor" (an early pre-v0.2.3 build), and a "vehicle interval" it uses to size the fleet. If you remove or disable the mod WITHOUT first switching a line's timetable off, those values can stay frozen in the save (the base game never resets them), so vehicles leave a stop immediately without spacing out. FIXED as of v0.3.2.2: the mod now repairs both automatically on load, for every line, and safely — the vehicle interval is rebuilt from the line's own settings, so a count you set by hand with "Assigned Vehicles" is preserved. To repair an affected save: subscribe to v0.3.2.2 (or newer), load your city, then save. Normal unbunching returns, and you can keep or remove the mod afterwards.
+
+CREDITS: per-line custom peak windows (each line can override the global peak hours and run its own peak interval) were contributed by incconutwo. Thank you. Community bug reports have driven several releases, including the terminus stop fix, the mid-route spawn fix and the missed-trip catch-up.
 
 Source (open source, MIT): https://github.com/AmicusDeus/TransitTimetables
 
