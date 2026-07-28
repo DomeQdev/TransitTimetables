@@ -87,6 +87,15 @@ namespace TransitTimetables
         // correction is RT-invariant (frame-based), so it composes with the slow-time compatibility above.
         //
         // Master toggle — apply the correction to POSTED TIMES and stop holds so the board matches reality (no cost).
+        //
+        // STAYS OFF BY DEFAULT. Flipping it on was prepared for v0.4.1 and deliberately reverted before release, for
+        // two reasons worth keeping written down. (1) Per-stop offsets are chosen PER STOP — measured once a stop has
+        // enough samples, else the raw estimate — so on a line whose real loop is ~3x the estimate the two interleave
+        // and the posted schedule is internally incoherent until every stop has warmed up, which is not guaranteed to
+        // happen (a hold at a near stop excludes that vehicle from measuring every stop downstream). (2) It is the only
+        // change of its kind not bounded by vanilla's own behaviour, and it would alter what the entire user base sees
+        // by default with no play-test behind it. Turn it on per-city instead; revisit the default once the
+        // measured/estimate mixing is fixed (that needs the dispatch to publish its offsets to the UI board).
         [SettingsUISection(Section, GroupRealism)]
         public bool RealisticTravelTime { get; set; } = false;
 
@@ -106,26 +115,35 @@ namespace TransitTimetables
         [SettingsUISection(Section, GroupStops)]
         public bool StopAtEveryStop { get; set; } = false;
 
-        // Minimum time a vehicle stands at a stop when it arrives ON its scheduled minute or LATE (an EARLY vehicle is
-        // unaffected — it is already waiting for its posted time, which gives passengers longer than any of this).
-        // Split road/rail because loading time is dominated by passenger volume: a metro or train exchanging a full
-        // platform of people needs materially longer than a bus, and the game's own travel estimate ignores boarding
-        // time entirely. Raising these lengthens the real loop, which the mod measures and feeds back into the vehicle
-        // count automatically, so a line will ask for more vehicles to hold the same headway.
+        // MAXIMUM extra time a vehicle may stand at a stop past its posted departure, waiting for passengers who are
+        // already boarding. It is a CEILING on lateness, not a floor on dwell: a vehicle with nobody boarding still
+        // leaves exactly on its posted minute.
         //
-        // ROAD defaults to 2 — the value hard-coded before this setting existed, so buses are unchanged.
-        // RAIL defaults to 5, which IS a deliberate behaviour change for existing users (a new key is absent from their
-        // saved settings, so they inherit this initializer). Justification: live measurement on a real city put rail
-        // loops at ~3x the game's own estimate, and that estimate ignores passenger boarding time entirely — platform
-        // exchange on a train or metro is simply not 2 minutes. 5 encodes the observed reality rather than leaving every
-        // rail line permanently behind its own timetable. Players who want the old behaviour set it back to 2.
-        [SettingsUISlider(min = 0f, max = 15f, step = 1f, unit = "integer")]
+        // This replaced a "minimum dwell" plus an unconditional force-departure. That combination was actively harmful:
+        // the base game counts a citizen as a passenger the moment they START WALKING to the vehicle, so forcing the
+        // departure ejected everyone still crossing the platform and put them back in the queue (reported live as
+        // "the bus fills up, then empties down to a certain amount, then leaves").
+        //
+        // The mechanism is now the GAME'S OWN, not a fight with it: vanilla already waits for boarding passengers after
+        // the scheduled time and gives up 1800 frames later (StopBoarding's cutoff). We simply ANCHOR that window so it
+        // expires at this setting instead of at vanilla's ~10 minutes — see HoldStop's GO branch. Everything in between
+        // (the widening boarding radius, the wait for passengers not yet seated) is stock behaviour, untouched.
+        //
+        // Split road/rail so rail can be raised independently — a train or metro exchanging a full platform takes far
+        // longer to load than a bus, its passengers spread along the platform to reach their own carriage, and unlike a
+        // bus it can never skip a stop. Both DEFAULT TO 3: the grace applies at every stop including the terminus and
+        // including early arrivals, so a per-stop value multiplies across a loop (a 15-station line at 5 could add well
+        // over an hour), and 3 keeps the release close to a strict improvement rather than a bet. Raise rail if you see
+        // passengers piling up on a busy platform.
+        // Capped at 10, just under vanilla's own ~9.9-minute ceiling — a larger value could not be honoured, since we
+        // can only ever shorten that window, never extend it.
+        [SettingsUISlider(min = 0f, max = 10f, step = 1f, unit = "integer")]
         [SettingsUISection(Section, GroupStops)]
-        public int MinDwellRoad { get; set; } = 2;
+        public int MaxDwellRoad { get; set; } = 3;
 
-        [SettingsUISlider(min = 0f, max = 15f, step = 1f, unit = "integer")]
+        [SettingsUISlider(min = 0f, max = 10f, step = 1f, unit = "integer")]
         [SettingsUISection(Section, GroupStops)]
-        public int MinDwellRail { get; set; } = 5;
+        public int MaxDwellRail { get; set; } = 3;
 
         // Compatibility: adapt the timetable's frame<->minute math to slow-time mods (Time2Work / "Realistic Trips")
         // that lengthen the in-game day. Default OFF, so the base mod runs its pure vanilla-clock timing for the vast
@@ -160,8 +178,8 @@ namespace TransitTimetables
             RealisticTravelTime = false;
             ProvisionRealFleet = false;
             StopAtEveryStop = false;
-            MinDwellRoad = 2; // keep in lockstep with the initializers above (this runs on "reset to defaults")
-            MinDwellRail = 5;
+            MaxDwellRoad = 3; // keep in lockstep with the initializers above (this runs on "reset to defaults")
+            MaxDwellRail = 3;
             RealisticTripsCompat = false;
         }
     }

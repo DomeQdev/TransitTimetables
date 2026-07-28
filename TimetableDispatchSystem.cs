@@ -131,9 +131,15 @@ namespace TransitTimetables
 
         // Minimum stop dwell (minutes) for a bus that arrives ON its slot or LATE, so it still boards/offloads instead
         // of being force-departed the instant it pulls in. Early buses are unaffected (they board during their hold).
-        // Default minimum stop dwell (minutes). Now only the DEFAULT behind Setting.MinDwellRoad / MinDwellRail — the
-        // live values come from those, so this constant exists to document the historical value the settings default to.
-        private const int kMinDwellMinutes = 2;
+        // Vanilla's own boarding grace: StopBoarding gives up and departs when frame >= m_DepartureFrame + this
+        // (TransportCarAISystem:1262, and byte-identical in the Train :1068, Watercraft :804 and Aircraft :833
+        // systems, so one constant covers every transport type). At the vanilla clock this is ~9.9 in-game minutes.
+        // We do not fight this window, we ANCHOR it — see HoldStop's GO branch — so the player's "maximum stop time"
+        // becomes the moment it expires. It is therefore also the hard ceiling on that setting.
+        private const uint kVanillaBoardingGraceFrames = 1800u;
+        // Minutes a catch-up dispatch is placed into the future, purely so the bus does not re-enter the terminus
+        // reassignment gate on the same visit and cancel its own catch-up. Not a dwell setting; see the catch-up branch.
+        private const int kCatchUpNudgeMinutes = 1;
         // The frame each vehicle started boarding its CURRENT stop. Presence == "boarding now"; stamped on the first
         // tick boarding and dropped when it leaves (so the same stop next loop re-stamps). Feeds HoldStop's min-dwell.
         private readonly Dictionary<Entity, uint> m_ArrivedFrame = new Dictionary<Entity, uint>();
@@ -772,6 +778,7 @@ namespace TransitTimetables
             // monotonicity ratchet added alongside it forced offMin >= waypointIndex, which on a stop-dense line can
             // exceed the real loop. Any real fix needs the UI plumbing plus a tested build.
             float offUnits = 0f;
+            int prevOffMin = 0; // previous stop's posted offset, for the monotonic floor below
             for (int j = 0; j < len; j++)
             {
                 int wpIdx = start + j; if (wpIdx >= len) wpIdx -= len;
@@ -783,6 +790,17 @@ namespace TransitTimetables
                 if (useMeasured && j >= 1 && m_StopOffsetSamples.TryGetValue(wp, out int sn) && sn >= kMinTrustSamples
                     && m_StopOffsetEma.TryGetValue(wp, out float emaF) && m_Fpm > 0.01f)
                     offMin = (int)System.Math.Round(emaF / m_Fpm);
+                // Offsets accumulate around the loop, so a stop can never be posted EARLIER than the one before it.
+                // That can still come out of the per-stop source mix: a measured stop (real time, ~3x the estimate on a
+                // busy line) followed by one that has not gathered enough samples and falls back to the estimate. Live
+                // evidence of the incoherence it causes: a posted sequence of …35, 85, 20, 144, 30… where the small
+                // values are estimate stops and the spikes measured ones. The vehicle is then force-departed at the
+                // estimate stop and reads as absurdly early at the next measured one.
+                // A FLAT FLOOR, not a +1-per-stop ratchet: two stops 20 seconds apart legitimately share a posted
+                // minute, whereas a ratchet forces offMin >= waypoint index and can outgrow the real loop on a
+                // stop-dense line. Gated on useMeasured so a player who has not enabled measurement is untouched.
+                if (useMeasured && j >= 1 && offMin < prevOffMin) offMin = prevOffMin;
+                prevOffMin = offMin;
                 bool boarding = false;
                 if (EntityManager.HasComponent<Connected>(wp))
                 {
@@ -855,11 +873,14 @@ namespace TransitTimetables
             // interval. The slot is a monotonic sim FRAME (no midnight-wrap ambiguity), recorded when the bus boards
             // the terminus and read as-is at every downstream stop of the same run.
             int maxInterval = ScheduleMath.MaxInterval(sch, customSch, sched);
-            // Minimum stand time for a vehicle that arrives on time or late, split road vs rail (trams, metros and
-            // trains all carry the Train component; ferries/aircraft fall to the road value). Both default to
-            // kMinDwellMinutes, the value this replaced, so an untouched setting is bit-identical to before.
-            int minDwellCfg = EntityManager.HasComponent<Game.Vehicles.Train>(veh) ? s.MinDwellRail : s.MinDwellRoad;
-            if (minDwellCfg < 0) minDwellCfg = 0;
+            // MAXIMUM overrun past the posted departure while passengers are still boarding, split road vs rail (trams,
+            // metros and trains all carry the Train component; ferries/aircraft take the road value). Converted to
+            // frames and clamped to vanilla's own grace window: we anchor that window (see the GO branch), so we can
+            // shorten it but never lengthen it beyond the game's built-in kVanillaBoardingGraceFrames.
+            int maxDwellCfg = EntityManager.HasComponent<Game.Vehicles.Train>(veh) ? s.MaxDwellRail : s.MaxDwellRoad;
+            if (maxDwellCfg < 0) maxDwellCfg = 0;
+            uint maxDwellFrames = (uint)(maxDwellCfg * m_Fpm);
+            if (maxDwellFrames > kVanillaBoardingGraceFrames) maxDwellFrames = kVanillaBoardingGraceFrames;
             bool haveSlot = m_RunSlotFrame.TryGetValue(veh, out uint slotFrame);
             string slotSrc = "keep"; // reassigned below on every path; init only to satisfy definite-assignment (catch-up branch)
             bool slotless = false; // bus with no terminus slot yet (spawned mid-route): min-dwell and GO, don't hold (#1/#6)
@@ -897,7 +918,11 @@ namespace TransitTimetables
                             // The bus will not actually leave for cuDwell minutes, so the gap it really closes is
                             // (untilNext - cuDwell). Comparing the raw untilNext overstates the benefit and lets a
                             // catch-up fire that lands almost on top of the next scheduled departure.
-                            int cuDwell = System.Math.Min(minDwellCfg, maxInterval);
+                            // A small FIXED nudge, deliberately not the max-dwell setting: its only job is to put the
+                            // catch-up slot slightly in the FUTURE so this lapped bus does not immediately re-enter the
+                            // reassignment gate below and undo its own catch-up. Boarding time is bought by the
+                            // anchored grace in the GO branch, not here.
+                            int cuDwell = System.Math.Min(kCatchUpNudgeMinutes, maxInterval);
                             bool farEnough = untilNext - cuDwell > interval * kCatchUpMinNextLeadFrac;
                             if (uncovered && farEnough)
                             {
@@ -992,11 +1017,11 @@ namespace TransitTimetables
             // is the frame the bus started boarding this stop (m_ArrivedFrame, stamped in the drain); fall back to now
             // for the first tick before the stamp lands. Dwell is capped at one headway so a sub-2-min line can't jam.
             uint arrived = m_ArrivedFrame.TryGetValue(veh, out uint af) ? af : frame;
-            int dwellMin = System.Math.Min(minDwellCfg, maxInterval);
-            // A slot-less bus never snaps to the grid: give it a plain min-dwell then GO, exactly like the on-slot/late
-            // branch (slotFrame is 0/unused here). Otherwise: depart at the slot if early, else min-dwell then GO.
-            uint target = (slotless || arrived >= slotFrame) ? arrived + (uint)(dwellMin * m_Fpm) : slotFrame;
-            bool dwelling = slotless || arrived >= slotFrame; // min-dwell (not an early-slot hold); excluded from m_VehHeld
+            // The POSTED departure moment. Early: its slot. On-slot/late: now (it is already due). Slot-less: now.
+            // Boarding time is no longer bought by padding this target — the anchored grace below buys it, which is why
+            // there is no longer a min-dwell term here.
+            uint target = (slotless || arrived >= slotFrame) ? arrived : slotFrame;
+            bool dwelling = slotless || arrived >= slotFrame; // already due (not an early-slot hold); excluded from m_VehHeld
 
             long dframes = (long)target - frame;                                    // >0 -> hold/dwell; <=0 -> depart
             int until = (int)System.Math.Round((double)dframes / m_Fpm);
@@ -1030,24 +1055,46 @@ namespace TransitTimetables
             }
             else
             {
-                // AT/PAST SCHEDULE: DEPART NOW. Do not wait for anyone.
+                // AT/PAST THE POSTED MINUTE: hand the vehicle back to the game, with a BOUNDED boarding grace.
                 //
-                // *** DESIGN DECISION — deliberate. This is NOT a bug; do not "fix" it. ***
-                // A timetabled vehicle leaves on its posted minute and never holds for a straggler. Waiting would push
-                // the whole line off its schedule, which is the single thing this mod exists to prevent — a real
-                // timetable does not hold the 08:15 for someone jogging up the platform. Whoever misses it takes the
-                // next slot. That is the point: the buses stay ON the timetable.
-                // History: v0.2 changed this to frame-1 (a "graceful" release) because an audit read the dropped cim
-                // as a defect. It isn't — the audit could not know the intent. That change silently reintroduced
-                // schedule slip on every departure and was reverted in v0.2.3.
+                // *** DESIGN DECISION — read this before changing it. Two earlier versions got it wrong in opposite
+                // directions, and this is the reconciliation. ***
                 //
-                // Mechanism: writing m_DepartureFrame >= 1800 frames into the PAST trips StopBoarding's cutoff
-                // (flag2, TransportCarAISystem:1262). That is the ONLY lever that clears BOTH guards which would
-                // otherwise delay us: it forces m_MaxBoardingDistance = float.MaxValue (:1263, so an approaching cim
-                // no longer holds the bus) AND skips the passenger-Ready wait (:1269-1278). frame-1 opens only the
-                // m_DepartureFrame gate and leaves both guards armed — hence the slip. 1800 is vanilla's own
-                // ~10-minute anti-softlock threshold; we borrow it because it is the only way to reach that branch.
-                uint force = frame > 1800u ? frame - 1800u : 1u;
+                // The rule is: a timetabled vehicle leaves on its posted minute and never waits for a straggler who has
+                // not started boarding. A real timetable does not hold the 08:15 for someone jogging up the platform.
+                // What it also must not do is throw off passengers who are ALREADY boarding — and that is the trap,
+                // because the base game adds a citizen to the vehicle's passenger list the moment they START WALKING
+                // to it, long before they are aboard.
+                //
+                // History, both halves of it:
+                //  - v0.2 released with frame-1. That opens only the departure-time gate and leaves BOTH of vanilla's
+                //    boarding guards armed with NO BOUND, so arriving cims re-armed the hold indefinitely and the line
+                //    slipped further behind on every departure. Reverted in v0.2.3.
+                //  - v0.2.3..v0.4.0 used frame-1800, vanilla's own anti-softlock cutoff. That clears both guards, which
+                //    stops the slip — but it also CANCELS every passenger still walking to the door, dumping them back
+                //    on the platform. Live report: "the bus fills up, then empties down to a certain amount, then
+                //    leaves", with the queue growing at busy stations. It fired on every departure of every vehicle.
+                //
+                // The fix is to use vanilla's mechanism instead of overriding it. StopBoarding gives up when
+                // `frame >= m_DepartureFrame + 1800` (TransportCarAISystem:1262, and identically in the Train,
+                // Watercraft and Aircraft systems). That window is anchored on m_DepartureFrame — so by writing
+                //     m_DepartureFrame = target + maxDwellFrames - 1800
+                // the cutoff lands exactly at `target + maxDwellFrames`, i.e. at the player's max dwell. Everything in
+                // between is stock game behaviour we do not touch: the widening boarding radius, the wait for
+                // passengers not yet seated, late arrivals joining. A vehicle with nobody boarding still departs on its
+                // posted minute (the departure time itself is already past), one with passengers boarding gets up to
+                // the configured grace, and the overrun can never exceed it. Bounded, so no slip; graceful, so no
+                // ejections.
+                //
+                // maxDwellFrames is clamped to the vanilla window above: we can only ever shorten it. At 0 this is
+                // exactly the old frame-1800 behaviour, which is the honest meaning of "wait for nobody".
+                long anchor = (long)target + maxDwellFrames - kVanillaBoardingGraceFrames;
+                uint force = anchor > 1L ? (uint)anchor : 1u;
+                // Never write a FUTURE departure frame from this branch. On the normal path target <= frame, so the
+                // anchor is already in the past. But this branch is also reached by the overrun clamp above, where
+                // target is far in the future — and there the anchor could land ahead of now, turning the "release
+                // rather than freeze" path into a hold, which is the exact opposite of its purpose.
+                if (force > frame) force = frame;
                 if (pt.m_DepartureFrame > force) { pt.m_DepartureFrame = force; EntityManager.SetComponentData(veh, pt); }
             }
         }
