@@ -102,26 +102,6 @@ namespace TransitTimetables
             return true;
         }
 
-        // Has the PLAYER pinned this line's vehicle count by hand? True when the line carries an ACTIVE vehicle-count
-        // policy — which is exactly what vanilla's "Assigned Vehicles" slider sets (VehicleCountSection.OnSetVehicleCount
-        // calls SetPolicy(line, vehicleCountPolicy, active: true, adjustment)).
-        //
-        // Sound as a "the player did this" test because THIS mod never activates that policy: it writes the line's own
-        // VehicleInterval RouteModifier directly instead (see TrySetLineFleet, and the issue-#2 note there). The only
-        // thing that ever turns the policy OFF is TryClearLineFleet, so we can never mistake our own work for theirs.
-        public bool HasPlayerVehicleCount(Entity line)
-        {
-            if (m_VehicleCountPolicy == Entity.Null)
-                ResolvePolicy();
-            if (m_VehicleCountPolicy == Entity.Null || !EntityManager.HasBuffer<Policy>(line))
-                return false;
-            DynamicBuffer<Policy> policies = EntityManager.GetBuffer<Policy>(line, isReadOnly: true);
-            for (int i = 0; i < policies.Length; i++)
-                if (policies[i].m_Policy == m_VehicleCountPolicy && (policies[i].m_Flags & PolicyFlags.Active) != 0)
-                    return true;
-            return false;
-        }
-
         // Deactivate a mod-applied vehicle-count policy so the line reverts to vanilla's automatic vehicle count —
         // used when a timetable is switched off. Without it the line stays pinned at the last derived count, and that
         // override is serialized into the save with no timetable left to explain it. (A previously player-set manual

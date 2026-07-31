@@ -165,9 +165,8 @@ namespace TransitTimetables
                 { m_S.GetOptionDescLocaleID(nameof(Setting.VehicleCounts)), T("opt.VehicleCounts.D") },
                 // Enum MEMBER labels. Unlike option labels these have NO fallback text — a missing key renders the raw
                 // locale id in the dropdown, so all three must be registered. Unset is hidden and never rendered.
-                { m_S.GetEnumValueLocaleID(VehicleCountMode.ModManages), T("enum.VehicleCounts.ModManages") },
-                { m_S.GetEnumValueLocaleID(VehicleCountMode.OtherModManages), T("enum.VehicleCounts.OtherModManages") },
-                { m_S.GetEnumValueLocaleID(VehicleCountMode.PlayerManages), T("enum.VehicleCounts.PlayerManages") },
+                { m_S.GetEnumValueLocaleID(VehicleCountMode.ModDecides), T("enum.VehicleCounts.ModDecides") },
+                { m_S.GetEnumValueLocaleID(VehicleCountMode.HandsOff), T("enum.VehicleCounts.HandsOff") },
                 { m_S.GetOptionLabelLocaleID(nameof(Setting.CleanUninstall)), T("opt.CleanUninstall.L") },
                 { m_S.GetOptionDescLocaleID(nameof(Setting.CleanUninstall)), T("opt.CleanUninstall.D") },
                 // Confirmation-dialog body. Without this the destructive button's [SettingsUIConfirmation] prompt shows

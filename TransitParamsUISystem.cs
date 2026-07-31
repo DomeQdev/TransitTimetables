@@ -603,20 +603,15 @@ namespace TransitTimetables
             // One branch per VehicleCounts mode. "Another mod decides" and "I decide" both mean the mod is not the one
             // choosing the number, but they are NOT the same sentence — telling a player who set the count themselves
             // that "another fleet mod" owns it is simply wrong.
-            // What THIS headway needs, for the two modes where the mod is not the one applying a number.
-            int needFleet = ScheduleMath.DerivedFleet(dur * (measured ? m_Dispatch.LineCorrection(line, dur, true) : 1f), interval, um);
-            if (s == null || s.VehicleCounts == VehicleCountMode.OtherModManages)
+            if (s == null || !s.ModSizesFleet)
             {
                 // Deliberately does NOT say "another mod is setting the count". The migration notice's opt-out lands
                 // here too, and that player may have no fleet mod at all — the counts are simply back on vanilla's
-                // automatic sizing. Say what is true in both cases: this mod is not setting them.
+                // automatic sizing, or on whatever they set with the Assigned Vehicles slider. Say what is true in
+                // every case: this mod is not setting them, and here is what the headway would need.
+                int needFleet = ScheduleMath.DerivedFleet(dur * (measured ? m_Dispatch.LineCorrection(line, dur, true) : 1f), interval, um);
                 sb.Append("This headway needs ~").Append(needFleet)
                   .Append(" vehicles. This mod is not setting the count.");
-            }
-            else if (s.VehicleCounts == VehicleCountMode.PlayerManages && m_Fleet != null && m_Fleet.HasPlayerVehicleCount(line))
-            {
-                sb.Append("This headway needs ~").Append(needFleet)
-                  .Append(" vehicles. You have set this line's count yourself, so the mod leaves it alone.");
             }
             // Otherwise the mod IS sizing this line — so quote the number it actually settled on, not a fresh
             // derivation. Re-deriving here skipped the cap, the shrink hysteresis and the stability gate, so the panel
@@ -624,7 +619,7 @@ namespace TransitTimetables
             else if (m_Dispatch.TryPostedFleet(line, out int postedFleet))
                 sb.Append("Provisioning ~").Append(postedFleet).Append(" vehicles for it.");
             else
-                sb.Append("This headway needs ~").Append(needFleet).Append(" vehicles.");
+                sb.Append("Sizing this line as soon as its duration estimate settles.");
             return sb.ToString();
         }
 

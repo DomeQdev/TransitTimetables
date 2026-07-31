@@ -313,7 +313,7 @@ namespace TransitTimetables
                 return;
             if (!keepManaging)
             {
-                s.VehicleCounts = VehicleCountMode.OtherModManages;
+                s.VehicleCounts = VehicleCountMode.HandsOff;
                 // Force a heal sweep on the next tick. WITHOUT THIS the opt-out silently leaves the previous version's
                 // VehicleInterval residue pinned on every line and freezes it into the save — the issue-#7 class of bug.
                 // The two paths that would normally clean up both miss, for the same reason:
@@ -522,9 +522,6 @@ namespace TransitTimetables
                 // line is edited or its route recreated — so a periodic re-write keeps our derived count in place.
                 // TrySetLineFleet only touches the buffer when the value actually differs, so this is cheap.
                 int desiredFleet = 0;
-                // Hoisted out of the sizing block because the DRAIN below needs it too: we must not retire vehicles
-                // down to our own target on a line whose count the player pinned by hand.
-                bool playerOwnsLine = false;
                 float durUnits = m_Fleet.LineStableDurationUnits(line);
                 // "Another mod decides" (compat with dedicated fleet mods that write the same per-line VehicleInterval
                 // modifier — e.g. All Transit + Truck): we never size the fleet; a line we WERE sizing is handed back
@@ -532,9 +529,9 @@ namespace TransitTimetables
                 // branch) and then left alone, so we can't fight the other mod every tick. The departure HOLD below is
                 // independent of the count and still runs. (durUnits is still computed above — MeasureLap needs it.)
                 //
-                // PlayerManages does NOT come here — it takes the sizing branch below (see Setting.ModSizesFleet) and
-                // steps aside per-line for any line whose count the player has actually pinned, so a line they have
-                // not touched still gets a number that respects their headway instead of falling back to vanilla's.
+                // This is the "Do not let the mod decide" branch — the only way to own vehicle counts. It is all-or-
+                // nothing by design: every line is handed back, so the player never has to remember which lines the
+                // mod is and is not touching.
                 if (!s.ModSizesFleet)
                 {
                     if (m_LastFleet.ContainsKey(line))
@@ -615,28 +612,15 @@ namespace TransitTimetables
                         // BEFORE growing the city, not to grow it and then mention it. Suppresses only the write; the
                         // fall-through below keeps the drain reasoning about the count vanilla is actually acting on.
                         //
-                        // ...and NOT on a line the player has taken over by hand. "I decide, per line" promised exactly
-                        // that, and without this test it was a LIE: the mode was byte-for-byte ModManages, so dragging
-                        // vanilla's "Assigned Vehicles" slider set the vehicle-count policy, RouteModifierInitializeSystem
-                        // materialised it into the line's VehicleInterval slot, and within 8 frames TrySetLineFleet
-                        // overwrote that very slot with the mod's own number. The player's entry vanished on every line.
-                        // The vanilla policy IS the per-line control, so no new UI is needed to honour it.
-                        playerOwnsLine = s.VehicleCounts == VehicleCountMode.PlayerManages
-                                         && m_Fleet.HasPlayerVehicleCount(line);
-                        if (playerOwnsLine)
-                        {
-                            // Hand this one line back, once. TryHealLeftoverFleetModifier, NOT TryClearLineFleet — the
-                            // latter deactivates the policy, which would destroy the very count the player just set.
-                            // The heal rebuilds the slot from the line's own policies, i.e. restores their number.
-                            if (m_LastFleet.ContainsKey(line))
-                            {
-                                m_Fleet.TryHealLeftoverFleetModifier(line);
-                                m_LastFleet.Remove(line);
-                            }
-                            m_ShrinkSince.Remove(line);
-                            m_PostedFleet.Remove(line);   // don't advertise a count we are not applying
-                        }
-                        else if (!NoticeAwaitingAnswer && stable >= kDurStableTicks && m_Fleet.TrySetLineFleet(line, desiredFleet))
+                        // NOTE: in this mode the mod re-asserts its own count on EVERY line, every tick — including a
+                        // line where the player has just dragged vanilla's "Assigned Vehicles" slider, whose value is
+                        // therefore overwritten within a tick. That is DELIBERATE, and not the same thing as the
+                        // overwrite bug an earlier build had: that build shipped a mode literally called "I decide,
+                        // per line" which then ignored the player. Here the setting says the mod decides. A per-line
+                        // exception was designed and rejected — it makes one line behave differently from its
+                        // neighbours with nothing on screen to explain why. Owning the counts means picking
+                        // "Do not let the mod decide", which hands every line back.
+                        if (!NoticeAwaitingAnswer && stable >= kDurStableTicks && m_Fleet.TrySetLineFleet(line, desiredFleet))
                             m_LastFleet[line] = desiredFleet;
                         else if (m_LastFleet.TryGetValue(line, out int heldFleet))
                             // The write was suppressed (estimate still settling) but the line already carries a count we
@@ -646,9 +630,7 @@ namespace TransitTimetables
                             desiredFleet = heldFleet;
                         // PUBLISH the settled count for the panel. Deliberately AFTER the cap, the hysteresis and the
                         // stability gate, so what the player reads is what the line is actually being sized to.
-                        // Skipped for a player-owned line: we are not sizing it, so we have no count to advertise.
-                        if (!playerOwnsLine)
-                            m_PostedFleet[line] = desiredFleet;
+                        m_PostedFleet[line] = desiredFleet;
                     }
                 }
 
@@ -776,11 +758,7 @@ namespace TransitTimetables
                         }
                     }
 
-                    // No surplus on a line the player owns: their count is the target, not ours, and retiring down to
-                    // our number would delete the buses they explicitly asked for. desiredFleet is deliberately left
-                    // NON-ZERO so the mid-route AbandonRoute protection below still engages — zeroing it is what once
-                    // let vanilla retire buses wherever they stood (live-reported as buses vanishing mid-route).
-                    int surplus = (desiredFleet > 0 && !playerOwnsLine) ? liveCount - desiredFleet : 0;
+                    int surplus = desiredFleet > 0 ? liveCount - desiredFleet : 0;
 
                     if (diagLog)
                         Mod.log.Info($"[SelfTest] fleet line#{line.Index} now={nowMin}m live={liveCount} target={desiredFleet} surplus={surplus} slotCovered={slotCovered} pending={pending.Count} forced={forcedStops}");

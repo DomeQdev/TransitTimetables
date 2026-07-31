@@ -175,11 +175,9 @@ namespace TransitTimetables
             return start < end ? (hour >= start && hour < end) : (hour >= start || hour < end);
         }
 
-        // True when the MOD is the one sizing lines. "The user decides" still sizes every line the user has not taken
-        // over by hand, so it belongs here: until a per-line count is entered, somebody has to pick a number, and
-        // leaving it to vanilla would ignore the player's chosen headway entirely.
-        public bool ModSizesFleet => VehicleCounts == VehicleCountMode.ModManages
-                                  || VehicleCounts == VehicleCountMode.PlayerManages;
+        // True when the MOD is the one sizing lines. Note Unset resolves to false here, which is the safe direction:
+        // if the migration somehow has not run yet, we touch nothing rather than resizing a city on a default.
+        public bool ModSizesFleet => VehicleCounts == VehicleCountMode.ModDecides;
 
         // Resolve the Unset sentinel exactly once, from the two legacy bools. Called from Mod.OnLoad immediately after
         // LoadSettings — NOT from OnGameLoadingComplete, which also fires at boot for the main menu, where an enum whose
@@ -197,7 +195,7 @@ namespace TransitTimetables
             // A stored false is a deliberate opt-out (the default is true, and only non-default values are written),
             // and it is the setting v0.3.5 shipped so a dedicated fleet mod could own the counts. Losing it would
             // restart exactly the modifier war that release ended.
-            VehicleCounts = ManageVehicleCount ? VehicleCountMode.ModManages : VehicleCountMode.OtherModManages;
+            VehicleCounts = ManageVehicleCount ? VehicleCountMode.ModDecides : VehicleCountMode.HandsOff;
             return true;
         }
 
@@ -225,26 +223,33 @@ namespace TransitTimetables
     // Who sizes a timetabled line's fleet. Backed by int (the default) — the settings widget casts to int, and an
     // enum-typed property with no attribute already renders as a dropdown, so [SettingsUIDropdown] is not wanted here
     // (it selects a different widget that demands a runtime item source).
+    // TWO STATES, deliberately. A third ("the mod sizes most lines but respects any line I set by hand") was designed
+    // and rejected: it makes one line silently behave differently from its nineteen neighbours with nothing on screen
+    // to say why, and it re-admits the incoherent case this redesign exists to remove — a hand-typed count that
+    // contradicts the line's own headway. The headway IS the cost lever. Want fewer vehicles? Widen the interval and
+    // the schedule stays true. A per-window count instead of an interval was also considered and dropped: an exact
+    // count below what the headway needs guarantees missed departures, and a count that steps down at a window
+    // boundary has nothing to damp it, so it would retire vehicles and rebuy them every single day.
     public enum VehicleCountMode
     {
         // ORDINAL 0 IS LOAD-BEARING. Colossal.Json writes ordinal 0 whenever it cannot parse a stored enum literal, so
         // anything that goes wrong degrades to "not decided yet" and re-runs the migration, rather than silently
-        // selecting a real mode. [SettingsUIHidden] on the MEMBER keeps it out of the dropdown while leaving it a
+        // selecting a real mode. That also makes RENAMING a member above safe: an older stored literal simply fails to
+        // parse and re-migrates. [SettingsUIHidden] on the MEMBER keeps it out of the dropdown while leaving it a
         // perfectly valid stored and decodable value. It is also never written to disk: the .coc is a diff against a
         // default instance whose value is likewise Unset, so the scheme is self-clearing.
         [SettingsUIHidden]
         Unset = 0,
 
-        // The mod sizes every line for its MEASURED loop, to hold the headway you set. The default for a new city.
-        ModManages = 1,
+        // The mod sizes every timetabled line for its MEASURED loop, to hold the headway you set — and it means EVERY
+        // line. Vanilla's "Assigned Vehicles" slider has no lasting effect on a timetabled line in this mode; the mod
+        // re-asserts its own count within a tick. That is intended: the mode says the mod decides.
+        ModDecides = 1,
 
-        // The mod never touches vehicle counts. Any line it was sizing is handed back ONCE and then left alone, so a
-        // dedicated fleet mod (All Transit + Truck and friends) can own the counts without the two fighting over the
-        // same VehicleInterval modifier every tick. This is the old "Manage vehicle count = off".
-        OtherModManages = 2,
-
-        // You set the counts per line. Until a line is taken over by hand the mod still sizes it — otherwise a line you
-        // have not touched would fall back to vanilla's count, which does not contain your chosen headway at all.
-        PlayerManages = 3,
+        // The mod never touches vehicle counts. Any line it was sizing is handed back ONCE and then left alone, so
+        // either you (via vanilla's slider) or a dedicated fleet mod (All Transit + Truck and friends) can own the
+        // counts without the two fighting over the same VehicleInterval modifier every tick. The departure HOLD still
+        // runs; a line with too few vehicles simply runs wider than its set interval.
+        HandsOff = 2,
     }
 }
