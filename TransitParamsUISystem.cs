@@ -77,7 +77,7 @@ namespace TransitTimetables
         private GetterValueBinding<int> m_SelStopLineNumB;
         private GetterValueBinding<bool> m_SelStopLineServesB;
 
-        private static Setting S => Mod.ActiveSetting;
+        private static TransitTimetablesSetting S => Mod.ActiveSetting;
 
         protected override void OnCreate()
         {
@@ -292,7 +292,7 @@ namespace TransitTimetables
 
         private void Refresh()
         {
-            Setting s = S;
+            TransitTimetablesSetting s = S;
             Entity sel = m_ToolSystem != null ? m_ToolSystem.selected : Entity.Null;
             int nowMin = (int)(m_TimeSystem.normalizedTime * 1440f) % 1440;
 
@@ -412,7 +412,7 @@ namespace TransitTimetables
         // (one entry). A train / metro / airport / harbor STATION is a building whose boarding points are platform
         // sub-objects, so collect ALL of them (the same graph vanilla walks in BuildingUtils.GetNumberOfConnectedLines)
         // so every line at the station is listed. Cached by the raw selection so a station isn't re-walked every UI tick.
-        private void ResolveSelectedStops(Setting s, Entity sel)
+        private void ResolveSelectedStops(TransitTimetablesSetting s, Entity sel)
         {
             if (s == null || sel == Entity.Null)
             {
@@ -463,7 +463,7 @@ namespace TransitTimetables
         // JSON: [{ "n": <lineNumber>, "tt": <bool>, "term": <bool>, "d": "<HH:MM, HH:MM, ...>" }, ...]
         // term = this stop is the line's EFFECTIVE terminus (explicit m_TerminusStop, else the first-stop fallback
         // that the dispatch system actually holds/retires at) — matches TerminusWaypoint below.
-        private string BuildStopBoard(Setting s, int nowMin)
+        private string BuildStopBoard(TransitTimetablesSetting s, int nowMin)
         {
             // One row per DISTINCT line across all resolved stops (a station's platforms); the first stop a line is
             // found on wins. m_BoardRows is kept in lockstep with the JSON (row i == m_BoardRows[i]) so each row's own
@@ -623,7 +623,7 @@ namespace TransitTimetables
             //               hysteresis and the stability gate). Re-deriving n here is what once made the panel print
             //               one number in the row above and a different one in this sentence, two rows apart.
             //   settling  — the mod will size it, but the duration estimate has not held steady yet
-            Setting s = S;
+            TransitTimetablesSetting s = S;
             string mode;
             int n;
             if (s == null || !s.ModSizesFleet)

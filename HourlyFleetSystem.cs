@@ -38,7 +38,7 @@ namespace TransitTimetables
 
         protected override void OnUpdate()
         {
-            Setting s = Mod.ActiveSetting;
+            TransitTimetablesSetting s = Mod.ActiveSetting;
             if (s == null)
                 return;
             if (m_VehicleCountPolicy == Entity.Null)

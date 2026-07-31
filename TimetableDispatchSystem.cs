@@ -296,7 +296,7 @@ namespace TransitTimetables
         //     "existing user" signal. A brand-new city gets the new behaviour as its baseline and is never interrupted;
         //     and because the flag is only written once the notice is ANSWERED, a player who happens to load a fresh
         //     city first still gets the notice later, when they open the city that actually has timetables.
-        private bool ShouldShowMigrationNotice(Setting s)
+        private bool ShouldShowMigrationNotice(TransitTimetablesSetting s)
         {
             if (s.MigrationNoticeAnswered || s.ProvisionRealFleet || !s.ModSizesFleet)
                 return false;
@@ -308,7 +308,7 @@ namespace TransitTimetables
         public static void AnswerMigrationNotice(bool keepManaging)
         {
             NoticeAwaitingAnswer = false;
-            Setting s = Mod.ActiveSetting;
+            TransitTimetablesSetting s = Mod.ActiveSetting;
             if (s == null)
                 return;
             if (!keepManaging)
@@ -352,7 +352,7 @@ namespace TransitTimetables
 
         protected override void OnUpdate()
         {
-            Setting s = Mod.ActiveSetting;
+            TransitTimetablesSetting s = Mod.ActiveSetting;
             if (s == null)
                 return;
 
@@ -934,7 +934,7 @@ namespace TransitTimetables
         // route time from the terminus (Σ RouteSegment.PathInformation.m_Duration + dwell at each intermediate timed
         // stop, 60-frame units) -> schedule minutes. Segment i is the leg from waypoint i to waypoint i+1, and the
         // dwell term mirrors HourlyFleetSystem.ComputeStableDuration / the UI board so posted and held times agree.
-        private void HoldAllStops(Entity line, Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int sched, Entity terminusStop,
+        private void HoldAllStops(Entity line, TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int sched, Entity terminusStop,
             Entity terminusWaypoint, uint frame, int nowMin, int interval, bool diagLog)
         {
             // Outside the line's operating window (day-only at night, night-only by day, or a degenerate EMPTY window
@@ -1117,7 +1117,7 @@ namespace TransitTimetables
         // The m_DepartureFrame bump is honored at all stops per TransportCarAISystem.StopBoarding (line ~1265: while
         // frame < m_DepartureFrame the boarding vehicle stays), not just the terminus.
         // When diag != null, appends this stop's decision (or skip reason) to the route's [SelfTest] dump.
-        private void HoldStop(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int sched, Entity line, Entity stop, uint frame, int nowMin,
+        private void HoldStop(TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int sched, Entity line, Entity stop, uint frame, int nowMin,
             int offMin, bool isTerminus, HashSet<Entity> lineVehicles, HashSet<Entity> lapServed, System.Text.StringBuilder diag)
         {
             string tag = isTerminus ? "T" : "";
@@ -1796,7 +1796,7 @@ namespace TransitTimetables
             // When the master switch is OFF, the dispatch loop manages NO line (every line takes the "hand back to
             // vanilla" branch), so a still-timetabled line's leftover fleet modifier would otherwise be skipped by the
             // `managed` guard below and never cleared on a disabled load. Treat master-off as "nothing managed".
-            Setting master = Mod.ActiveSetting;
+            TransitTimetablesSetting master = Mod.ActiveSetting;
             bool masterOn = master != null && master.Enabled;
             NativeArray<Entity> lines = m_HealQuery.ToEntityArray(Allocator.Temp);
             int factorHealed = 0, fleetHealed = 0;

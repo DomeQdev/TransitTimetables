@@ -17,7 +17,7 @@ namespace TransitTimetables
         // Headway (minutes) in effect at a given minute-of-day, respecting the line's operating schedule. A per-line
         // CUSTOM PEAK (PR #5), when enabled and the hour falls inside either custom window, OVERRIDES the global
         // peak/off-peak/night for this line only.
-        public static int IntervalFor(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int minuteOfDay, int schedule)
+        public static int IntervalFor(TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int minuteOfDay, int schedule)
         {
             int hour = Hour(minuteOfDay);
             if (customSch.m_Enabled
@@ -30,7 +30,7 @@ namespace TransitTimetables
             return Pos(sch.m_OffPeakInterval);
         }
 
-        // Half-open [start, end) hour window, wrapping past midnight when start > end (mirrors Setting.InWindow). Public
+        // Half-open [start, end) hour window, wrapping past midnight when start > end (mirrors TransitTimetablesSetting.InWindow). Public
         // so the per-line custom-peak windows use the same rule the global windows do.
         public static bool InWindow(int hour, int start, int end)
         {
@@ -62,7 +62,7 @@ namespace TransitTimetables
 
         // The effective first-departure minute-of-day. A night-only line's first departure is interpreted within the
         // night window: a value outside [NightStart, NightEnd) is clamped to the night window start.
-        public static int FirstDeparture(Setting s, TimetableSchedule sch, int schedule)
+        public static int FirstDeparture(TransitTimetablesSetting s, TimetableSchedule sch, int schedule)
         {
             int first = sch.m_FirstDeparture;
             // Clamp a first departure that falls outside the line's operating window to the window's start, so the
@@ -76,7 +76,7 @@ namespace TransitTimetables
 
         // Is a minute-of-day inside the line's operating window? (Night-only: the night window; day-only: everything
         // else; both: always.)
-        public static bool InService(Setting s, int schedule, int minuteOfDay)
+        public static bool InService(TransitTimetablesSetting s, int schedule, int minuteOfDay)
         {
             int hour = Hour(minuteOfDay);
             if (schedule == LineSchedule.Night) return s.InNightWindow(hour);
@@ -87,7 +87,7 @@ namespace TransitTimetables
         // Next scheduled departure as an ABSOLUTE minute from today's midnight (may be negative when tonight's night
         // service actually started yesterday, or exceed 1439 for tomorrow) that is >= nowMinute AND in-service. Scans
         // yesterday/today/tomorrow so a night window that wraps past midnight resolves correctly. Used by the hold.
-        public static int NextDeparture(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int nowMinute)
+        public static int NextDeparture(TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int nowMinute)
         {
             int first = FirstDeparture(s, sch, schedule);
             for (int day = -1; day <= 1; day++)
@@ -114,7 +114,7 @@ namespace TransitTimetables
         // day-stepping, so a night window that wraps past midnight and a non-dividing interval stay aligned. Used by the
         // missed-trip catch-up to tell whether a scheduled slot has passed UNCOVERED. Returns int.MinValue when no
         // in-service departure precedes now (e.g. before the very first departure of a day-only line).
-        public static int PreviousDeparture(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int nowMinute)
+        public static int PreviousDeparture(TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int nowMinute)
         {
             int first = FirstDeparture(s, sch, schedule);
             int best = int.MinValue;
@@ -138,7 +138,7 @@ namespace TransitTimetables
 
         // The day's departures listed FROM the first departure (printed-timetable style), as minute-of-day 0..1439,
         // stopping at the operating-window boundary. Fills up to `count`; returns how many.
-        public static int DayFromFirst(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int[] outMin, int count)
+        public static int DayFromFirst(TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int[] outMin, int count)
         {
             int t = FirstDeparture(s, sch, schedule);
             int n = 0, guard = 0;
@@ -156,7 +156,7 @@ namespace TransitTimetables
 
         // The next `count` departures at/after nowMinute (as minute-of-day 0..1439), schedule-aware. Steps via
         // NextDeparture so night/day operating windows and midnight wrap are handled. Returns how many filled.
-        public static int Upcoming(Setting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int nowMinute, int[] outMin, int count)
+        public static int Upcoming(TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int nowMinute, int[] outMin, int count)
         {
             int t = NextDeparture(s, sch, customSch, schedule, nowMinute);
             int n = 0, guard = 0;

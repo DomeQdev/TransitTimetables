@@ -4,8 +4,14 @@ using Game.Settings;
 
 namespace TransitTimetables
 {
+    // NAME IS LOAD-BEARING, and it must stay UNIQUE across this author's mods. Setting.ApplyAndSave() calls
+    // AssetDatabase.SaveSpecificSetting(GetType().Name), which resolves the target settings asset by the CLASS SIMPLE
+    // NAME and stops at the FIRST match. While every mod called this class "Setting" a save from any one of them could
+    // land in another mod's file and skip its own (observed live: one session wrote only TransitTimetables.coc and left
+    // the other six byte-identical). Nothing persisted derives from this name — the on-disk identity is [FileLocation]
+    // below plus the name passed to LoadSettings — so renaming the class is safe, but renaming it back is not.
     [FileLocation(nameof(TransitTimetables))]
-    public class Setting : ModSetting
+    public class TransitTimetablesSetting : ModSetting
     {
         public const string Section = "Main";
         public const string GroupWindows = "Peak windows";
@@ -15,7 +21,7 @@ namespace TransitTimetables
         public const string GroupCompat = "Compatibility";
         public const string GroupGeneral = "General";
 
-        public Setting(IMod mod) : base(mod) { }
+        public TransitTimetablesSetting(IMod mod) : base(mod) { }
 
         // NOTE: initializers double as the settings-migration failsafe (missing keys in an old .coc keep these
         // values instead of defaulting to 0/false).
