@@ -650,7 +650,14 @@ namespace TransitTimetables
             if (stopWp == terminusWp)
                 offset = 0;                                          // the terminus itself: exact by definition, no estimate
             else if (m_Dispatch != null && m_Dispatch.TryPostedOffsetMinutes(stopWp, out int postedOff))
+            {
                 offset = postedOff;
+                // A posted offset is not automatically a MEASURED one. Until the line has timed enough real laps the
+                // ladder is inert and the dispatch posts the game's raw estimate — a correct number to hold to, but
+                // still a guess, and it will move once laps land. Flag it, or the board claims a precision it does not
+                // have. (Measurement is per LINE now, not per stop, so this is the whole line's state.)
+                estimated = m_Dispatch != null && !m_Dispatch.LineCorrectionMeasured(line);
+            }
             else
             {
                 offset = (int)System.Math.Round(TravelUnitsBetween(line, terminusWp, stopWp) * m_Timebase.UnitMinutes);
