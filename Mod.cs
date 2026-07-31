@@ -24,6 +24,14 @@ namespace TransitTimetables
             foreach (var locale in lm.GetSupportedLocales())
                 lm.AddSource(locale, new LocaleEn(ActiveSetting, locale));
             AssetDatabase.global.LoadSettings(nameof(TransitTimetables), ActiveSetting, new Setting(this));
+            // Resolve the VehicleCounts sentinel from the legacy bools BEFORE anything can read it, and before the
+            // Options page can render it. Deliberately here and not in OnGameLoadingComplete: that also fires at boot
+            // for the main menu, and a dropdown whose current value matches no visible member renders blank.
+            if (ActiveSetting.Migrate())
+            {
+                log.Info($"[SelfTest] migrated vehicle-count setting -> {ActiveSetting.VehicleCounts}");
+                SaveSettings();
+            }
             // Persist every settings change to disk the moment it is applied (survives a crash / non-clean exit).
             ActiveSetting.onSettingsApplied += OnSettingsApplied;
 
@@ -38,6 +46,16 @@ namespace TransitTimetables
             updateSystem.UpdateAt<TransitParamsUISystem>(SystemUpdatePhase.UIUpdate);
 
             log.Info("[SelfTest] TransitTimetables loaded (fixed-departure timetables).");
+        }
+
+        // Flush settings to disk. Deliberately NOT ActiveSetting.ApplyAndSave() for code-driven writes: that calls
+        // AssetDatabase.SaveSpecificSetting(GetType().Name), which resolves its target by the CLASS name and stops at
+        // the first match — and every one of this author's mods names that class "Setting", so it can flush a different
+        // mod's file and skip this one. SaveSettings() iterates every registered setting asset, so it cannot miss.
+        public static void SaveSettings()
+        {
+            try { _ = AssetDatabase.global.SaveSettings(); }
+            catch (System.Exception e) { log.Warn($"settings save failed: {e.Message}"); }
         }
 
         // Persist a settings change to disk as soon as it is applied (guard: ApplyAndSave re-raises onSettingsApplied).
@@ -105,14 +123,16 @@ namespace TransitTimetables
                 { "TransitTimetables.ui.buttonTooltip", T("ui.buttonTooltip") },
                 { "TransitTimetables.ui.panelTitle", T("ui.panelTitle") },
                 { "TransitTimetables.ui.panelHint", T("ui.panelHint") },
+                { "TransitTimetables.ui.estimatedTimes", T("ui.estimatedTimes") },
+                // One-time migration notice (rendered by the mod's own React dialog, not the Options page).
+                { "TransitTimetables.ui.noticeTitle", T("ui.noticeTitle") },
+                { "TransitTimetables.ui.noticeBody", T("ui.noticeBody") },
+                { "TransitTimetables.ui.noticeAsk", T("ui.noticeAsk") },
+                { "TransitTimetables.ui.noticeWhere", T("ui.noticeWhere") },
+                { "TransitTimetables.ui.noticeKeep", T("ui.noticeKeep") },
+                { "TransitTimetables.ui.noticeOff", T("ui.noticeOff") },
                 { m_S.GetOptionGroupLocaleID(Setting.GroupWindows), T("grp.GroupWindows") },
-                { m_S.GetOptionGroupLocaleID(Setting.GroupRealism), T("grp.GroupRealism") },
                 { m_S.GetOptionGroupLocaleID(Setting.GroupCompat), T("grp.GroupCompat") },
-
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.RealisticTravelTime)), T("opt.RealisticTravelTime.L") },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.RealisticTravelTime)), T("opt.RealisticTravelTime.D") },
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.ProvisionRealFleet)), T("opt.ProvisionRealFleet.L") },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.ProvisionRealFleet)), T("opt.ProvisionRealFleet.D") },
 
                 { m_S.GetOptionGroupLocaleID(Setting.GroupStops), T("grp.GroupStops") },
                 { m_S.GetOptionLabelLocaleID(nameof(Setting.StopAtEveryStop)), T("opt.StopAtEveryStop.L") },
@@ -141,8 +161,13 @@ namespace TransitTimetables
                 { m_S.GetOptionGroupLocaleID(Setting.GroupGeneral), T("grp.GroupGeneral") },
                 { m_S.GetOptionLabelLocaleID(nameof(Setting.Enabled)), T("opt.Enabled.L") },
                 { m_S.GetOptionDescLocaleID(nameof(Setting.Enabled)), T("opt.Enabled.D") },
-                { m_S.GetOptionLabelLocaleID(nameof(Setting.ManageVehicleCount)), T("opt.ManageVehicleCount.L") },
-                { m_S.GetOptionDescLocaleID(nameof(Setting.ManageVehicleCount)), T("opt.ManageVehicleCount.D") },
+                { m_S.GetOptionLabelLocaleID(nameof(Setting.VehicleCounts)), T("opt.VehicleCounts.L") },
+                { m_S.GetOptionDescLocaleID(nameof(Setting.VehicleCounts)), T("opt.VehicleCounts.D") },
+                // Enum MEMBER labels. Unlike option labels these have NO fallback text — a missing key renders the raw
+                // locale id in the dropdown, so all three must be registered. Unset is hidden and never rendered.
+                { m_S.GetEnumValueLocaleID(VehicleCountMode.ModManages), T("enum.VehicleCounts.ModManages") },
+                { m_S.GetEnumValueLocaleID(VehicleCountMode.OtherModManages), T("enum.VehicleCounts.OtherModManages") },
+                { m_S.GetEnumValueLocaleID(VehicleCountMode.PlayerManages), T("enum.VehicleCounts.PlayerManages") },
                 { m_S.GetOptionLabelLocaleID(nameof(Setting.CleanUninstall)), T("opt.CleanUninstall.L") },
                 { m_S.GetOptionDescLocaleID(nameof(Setting.CleanUninstall)), T("opt.CleanUninstall.D") },
                 // Confirmation-dialog body. Without this the destructive button's [SettingsUIConfirmation] prompt shows

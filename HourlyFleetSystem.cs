@@ -70,7 +70,8 @@ namespace TransitTimetables
         // value = m_DefaultVehicleInterval then RouteUtils.ApplyModifier(VehicleInterval) (value += delta.x;
         // value += value*delta.y). So delta.x = wanted - default makes value == wanted and the count == target,
         // UNCAPPED and PER-LINE. This is the fix for issue #2: the mod no longer widens the shared policy's modifier
-        // RANGE (VehicleLimitSystem), which is what distorted the vanilla "Assigned Vehicles" slider on EVERY line.
+        // RANGE, which is what distorted the vanilla "Assigned Vehicles" slider on EVERY line. (That was done by a
+        // VehicleLimitSystem of the mod's own, deleted in v0.2.8 — it is not a vanilla system, and nothing reads it now.)
         // The buffer is type-indexed, so pad it exactly the way vanilla's RouteModifierInitializeSystem.AddModifier
         // does. Must be re-asserted every tick by the dispatch: a line edit or route (re)creation rebuilds this buffer
         // from the line's policies (RouteModifierInitializeSystem runs on Created / a policy Modify). True if applied.
@@ -99,6 +100,26 @@ namespace TransitTimetables
                 mods[idx] = m;
             }
             return true;
+        }
+
+        // Has the PLAYER pinned this line's vehicle count by hand? True when the line carries an ACTIVE vehicle-count
+        // policy — which is exactly what vanilla's "Assigned Vehicles" slider sets (VehicleCountSection.OnSetVehicleCount
+        // calls SetPolicy(line, vehicleCountPolicy, active: true, adjustment)).
+        //
+        // Sound as a "the player did this" test because THIS mod never activates that policy: it writes the line's own
+        // VehicleInterval RouteModifier directly instead (see TrySetLineFleet, and the issue-#2 note there). The only
+        // thing that ever turns the policy OFF is TryClearLineFleet, so we can never mistake our own work for theirs.
+        public bool HasPlayerVehicleCount(Entity line)
+        {
+            if (m_VehicleCountPolicy == Entity.Null)
+                ResolvePolicy();
+            if (m_VehicleCountPolicy == Entity.Null || !EntityManager.HasBuffer<Policy>(line))
+                return false;
+            DynamicBuffer<Policy> policies = EntityManager.GetBuffer<Policy>(line, isReadOnly: true);
+            for (int i = 0; i < policies.Length; i++)
+                if (policies[i].m_Policy == m_VehicleCountPolicy && (policies[i].m_Flags & PolicyFlags.Active) != 0)
+                    return true;
+            return false;
         }
 
         // Deactivate a mod-applied vehicle-count policy so the line reverts to vanilla's automatic vehicle count —

@@ -57,6 +57,12 @@ namespace TransitTimetables
         // Per board ROW, the (line, stop) it represents — so each row's OWN "Set as terminus" button targets exactly that
         // line at exactly the platform it uses here. Built in lockstep with the board JSON (row i == m_BoardRows[i]).
         private readonly List<(Entity line, Entity stop)> m_BoardRows = new List<(Entity, Entity)>();
+        // Bumped once when the dispatch decides this city needs the one-time migration notice; the React side raises
+        // the dialog on the change. static so the dispatch (a different system) can request it without a lookup.
+        private static int m_NoticeSeq;
+        private GetterValueBinding<int> m_NoticeSeqB;
+        public static void RaiseMigrationNotice() => m_NoticeSeq++;
+
         private GetterValueBinding<bool> m_SelStopHasB;
         private GetterValueBinding<string> m_SelStopBoardB;
         private GetterValueBinding<int> m_AutoOpenB;
@@ -129,6 +135,12 @@ namespace TransitTimetables
             AddBinding(m_AutoOpenB);
             AddBinding(m_SelStopLineNumB);
             AddBinding(m_SelStopLineServesB);
+            // One-time migration notice: a COUNTER, not a bool. A React effect that watches a counter cannot miss the
+            // signal even if it mounts after the bump — useValue hands it the current value on mount — whereas a
+            // fire-and-forget event raised while the Game screen is still mounting is simply dropped.
+            m_NoticeSeqB = new GetterValueBinding<int>(Group, "noticeSeq", () => m_NoticeSeq);
+            AddBinding(m_NoticeSeqB);
+            AddBinding(new TriggerBinding<bool>(Group, "noticeAnswer", TimetableDispatchSystem.AnswerMigrationNotice));
 
             AddBinding(new TriggerBinding<bool>(Group, "setSelTtEnabled", v => MutateSchedule(v, (ref TimetableSchedule sch, bool on) => sch.m_Enabled = on)));
             AddBinding(new TriggerBinding<int>(Group, "setSelTtFirst", v => MutateSchedule(v, (ref TimetableSchedule sch, int x) => sch.m_FirstDeparture = (ushort)Clamp(x, 0, 1439))));
@@ -273,6 +285,7 @@ namespace TransitTimetables
             m_AutoOpenB.Update();
             m_SelStopLineNumB.Update();
             m_SelStopLineServesB.Update();
+            m_NoticeSeqB.Update();
         }
 
         private void Refresh()
@@ -314,12 +327,28 @@ namespace TransitTimetables
                 m_SelTtInterval = ScheduleMath.IntervalFor(s, sch, cps, nowMin, m_SelSchedule);
                 float dur = m_Fleet != null ? m_Fleet.LineStableDurationUnits(sel) : 0f;
                 float um = m_Timebase.UnitMinutes;
-                // The panel's fleet count = what the dispatch actually provisions: the corrected loop when
-                // ProvisionRealFleet is on (grow-only), else the estimate — so the number matches the buses on the road.
-                float fleetUnits = (s.ProvisionRealFleet && m_Dispatch != null && dur > 1f)
-                    ? dur * m_Dispatch.LineCorrection(sel, dur, true) : dur;
-                m_SelTtFleet = dur > 1f ? ScheduleMath.DerivedFleet(fleetUnits, m_SelTtInterval, um) : 0;
-                m_SelTtRealInfo = BuildRealInfo(sel, dur, um); // honest real-vs-estimate line (shown regardless of toggles)
+                // The panel's fleet count = EXACTLY the number the dispatch settled on. It used to re-derive it here
+                // from the same raw inputs, which silently dropped the three things the dispatch applies afterwards:
+                // the hard cap, the shrink hysteresis, and the post-load stability gate. The panel could therefore
+                // advertise a count the dispatch was actively refusing to write. Same rule as the departure board:
+                // one number, produced once, read here.
+                if (!s.Enabled)
+                    m_SelTtFleet = 0;   // handed back to vanilla; we are not setting a count, so do not show one
+                else if (m_Dispatch != null && m_Dispatch.TryPostedFleet(sel, out int postedFleet))
+                    m_SelTtFleet = postedFleet;
+                else
+                {
+                    // Not sized by the mod (another mod owns the count, or the line has no usable estimate yet) — show
+                    // what this headway WOULD need so the row is not blank, and let BuildRealInfo say who owns it.
+                    float fleetUnits = (m_Dispatch != null && dur > 1f && m_Dispatch.LineCorrectionMeasured(sel))
+                        ? dur * m_Dispatch.LineCorrection(sel, dur, true) : dur;
+                    m_SelTtFleet = dur > 1f ? ScheduleMath.DerivedFleet(fleetUnits, m_SelTtInterval, um) : 0;
+                }
+                // Master switch OFF => the dispatch has already handed this line back to vanilla (holds released, our
+                // fleet modifier healed, measurement dropped). Claiming "Provisioning ~6 vehicles for it" then is
+                // simply false, and the correction it quotes has degraded to the cold-start density prior anyway.
+                // Same rule as the departure prediction below: report nothing rather than something untrue.
+                m_SelTtRealInfo = s.Enabled ? BuildRealInfo(sel, dur, um) : "";
                 Entity term = TerminusWaypoint(sel, sch);
                 // No departure predictions while the master switch is off — buses run vanilla, so posting scheduled
                 // times would mislead. The config above stays visible/editable; only the live prediction is suppressed.
@@ -457,6 +486,7 @@ namespace TransitTimetables
                 bool tt = hasSched && sch.m_Enabled;
                 string dep = "";
                 bool term = false;
+                bool est = false;
                 if (tt)
                 {
                     Entity terminusWp = TerminusWaypoint(line, sch);
@@ -475,14 +505,16 @@ namespace TransitTimetables
                         m_BoardRows[i] = (line, stop);
                     }
                     Entity stopWp = WaypointForStop(line, stop);
-                    dep = DeparturesAtStop(line, sch, terminusWp, stopWp, ScheduleOf(line), nowMin);
+                    dep = DeparturesAtStop(line, sch, terminusWp, stopWp, ScheduleOf(line), nowMin, out est);
                     term = termStop != Entity.Null && termStop == stop;
                 }
                 if (i > 0) sb.Append(',');
                 sb.Append("{\"n\":").Append(number);
                 if (nm != null) sb.Append(",\"nm\":\"").Append(JsonEscape(nm)).Append('"');
                 sb.Append(",\"tt\":").Append(tt ? "true" : "false")
-                  .Append(",\"term\":").Append(term ? "true" : "false").Append(",\"d\":\"").Append(dep).Append("\"}");
+                  .Append(",\"term\":").Append(term ? "true" : "false")
+                  .Append(",\"est\":").Append(est ? "true" : "false")     // times derived from the game's estimate, not measured
+                  .Append(",\"d\":\"").Append(dep).Append("\"}");
             }
             sb.Append(']');
             return sb.ToString();
@@ -568,27 +600,31 @@ namespace TransitTimetables
               .Append(corr.ToString("0.0")).Append("x the ").Append(estMin).Append("-min estimate, ")
               .Append(measured ? "measured" : "estimated").Append("). ");
             Setting s = S;
-            if (s != null && !s.ManageVehicleCount)
+            // One branch per VehicleCounts mode. "Another mod decides" and "I decide" both mean the mod is not the one
+            // choosing the number, but they are NOT the same sentence — telling a player who set the count themselves
+            // that "another fleet mod" owns it is simply wrong.
+            // What THIS headway needs, for the two modes where the mod is not the one applying a number.
+            int needFleet = ScheduleMath.DerivedFleet(dur * (measured ? m_Dispatch.LineCorrection(line, dur, true) : 1f), interval, um);
+            if (s == null || s.VehicleCounts == VehicleCountMode.OtherModManages)
             {
-                // The mod isn't setting the count (compat mode) — the number is only what THIS headway needs; you or
-                // another fleet mod own the actual fleet.
-                int needFleet = ScheduleMath.DerivedFleet(dur, interval, um);
-                sb.Append("Vehicle-count management is OFF: this headway needs ~").Append(needFleet)
-                  .Append(" vehicles, but you or another fleet mod set the count.");
+                // Deliberately does NOT say "another mod is setting the count". The migration notice's opt-out lands
+                // here too, and that player may have no fleet mod at all — the counts are simply back on vanilla's
+                // automatic sizing. Say what is true in both cases: this mod is not setting them.
+                sb.Append("This headway needs ~").Append(needFleet)
+                  .Append(" vehicles. This mod is not setting the count.");
             }
-            else if (s != null && s.ProvisionRealFleet)
+            else if (s.VehicleCounts == VehicleCountMode.PlayerManages && m_Fleet != null && m_Fleet.HasPlayerVehicleCount(line))
             {
-                float fc = m_Dispatch.LineCorrection(line, dur, true);
-                int realFleet = ScheduleMath.DerivedFleet(dur * fc, interval, um);
-                sb.Append("Provisioning ~").Append(realFleet).Append(" vehicles for it.");
+                sb.Append("This headway needs ~").Append(needFleet)
+                  .Append(" vehicles. You have set this line's count yourself, so the mod leaves it alone.");
             }
+            // Otherwise the mod IS sizing this line — so quote the number it actually settled on, not a fresh
+            // derivation. Re-deriving here skipped the cap, the shrink hysteresis and the stability gate, so the panel
+            // could print one count in the row above and a different one in this sentence, two lines apart.
+            else if (m_Dispatch.TryPostedFleet(line, out int postedFleet))
+                sb.Append("Provisioning ~").Append(postedFleet).Append(" vehicles for it.");
             else
-            {
-                int estFleet = ScheduleMath.DerivedFleet(dur, interval, um);
-                int eff = estFleet > 0 ? (int)System.Math.Round((double)realMin / estFleet) : 0;
-                sb.Append("Running ~").Append(estFleet).Append(" vehicles -> effective headway ~")
-                  .Append(eff).Append(" min (you set ").Append(interval).Append(").");
-            }
+                sb.Append("This headway needs ~").Append(needFleet).Append(" vehicles.");
             return sb.ToString();
         }
 
@@ -596,17 +632,30 @@ namespace TransitTimetables
         // stopWp. A terminus departure D appears here as D+offset, so we list terminus departures from now-offset.
         // Up to 6, "HH:MM, ...".
         private string DeparturesAtStop(Entity line, TimetableSchedule sch, Entity terminusWp, Entity stopWp, int schedule, int nowMin)
+            => DeparturesAtStop(line, sch, terminusWp, stopWp, schedule, nowMin, out _);
+
+        private string DeparturesAtStop(Entity line, TimetableSchedule sch, Entity terminusWp, Entity stopWp, int schedule, int nowMin,
+                                        out bool estimated)
         {
+            estimated = false;
             if (terminusWp == Entity.Null || stopWp == Entity.Null)
                 return "";
-            // Real-travel-time: post the MEASURED per-stop arrival offset the holds use (when opted in and learned), so
-            // the board matches what the buses actually do. Otherwise the game's estimate. No uniform factor.
+            // Post EXACTLY the offset the dispatch used to hold the vehicles. Deriving our own here is what made the
+            // printed board and the actual departures disagree — two calculations from the same inputs will always
+            // drift apart eventually, and once the dispatch started correcting for measured travel they diverged by
+            // up to ~45 minutes. There is now ONE number, produced by the dispatch and read here.
+            // The estimate below is a genuine fallback only: a line the dispatch is not ticking (no timetable) or a
+            // waypoint it has not walked yet. It cannot be corrected, because the correction lives in the dispatch.
             int offset;
-            if (S != null && S.RealisticTravelTime && m_Dispatch != null && stopWp != terminusWp
-                && m_Dispatch.TryStopOffsetMinutes(stopWp, out int measOff))
-                offset = measOff;
+            if (stopWp == terminusWp)
+                offset = 0;                                          // the terminus itself: exact by definition, no estimate
+            else if (m_Dispatch != null && m_Dispatch.TryPostedOffsetMinutes(stopWp, out int postedOff))
+                offset = postedOff;
             else
+            {
                 offset = (int)System.Math.Round(TravelUnitsBetween(line, terminusWp, stopWp) * m_Timebase.UnitMinutes);
+                estimated = true;                                    // say so on the board rather than implying precision
+            }
             // Clamp the seed so a stop whose first arrival is still ahead (offset > now, early morning) advertises the
             // real first bus rather than extrapolating yesterday's sequence backwards across midnight.
             int seed = nowMin - offset;

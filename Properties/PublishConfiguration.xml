@@ -63,7 +63,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-transittimetables-adjust-departure-times-and-frequencies-in-all-types-of-transit-systems.1936039/" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.4.1" />
+	<ModVersion Value="0.4.2" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -72,9 +72,15 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-v0.4.1 [BETA] — Vehicles no longer leave passengers behind at the door
+v0.4.2 [BETA] — Steadier vehicle counts, and a retirement fix
 
-Still marked BETA: this changes how vehicles depart and how stop times are calculated. It has been reviewed line by line but not played through a long test. Please report anything odd on GitHub. If something misbehaves you can step back without uninstalling: "Maximum stop time" to 0 restores the old departure behaviour, "Realistic travel time" off restores the game's own estimates, "Manage vehicle count" off hands vehicle counts back, and the master switch pauses the whole mod.
+Still BETA: reviewed line by line, but not played through a long test. Please report anything odd on GitHub. You can step back without uninstalling — "Maximum stop time" to 0 restores the old departure behaviour, "Manage vehicle count" off hands vehicle counts back to you, and the master switch pauses the whole mod.
+
+- FIX: the vehicle count no longer flips back and forth by one. If a line's round trip sits close to a whole multiple of its interval — say a 28-to-32 minute loop on a 30 minute schedule — the calculated count could flap between one value and the next as traffic varied, buying and retiring a vehicle each time and leaving a gap in service. A reduction of ONE vehicle now has to hold steadily for about 20 minutes before it is acted on. A bigger change still applies immediately (that is a peak/off-peak boundary or an edited route, not traffic noise), and ADDING vehicles is never delayed. Two things to expect: the panel shows the newly calculated number straight away while the running count catches up, so after editing an interval you may see them disagree for a while; and on a line that keeps flipping, the extra vehicle is kept on purpose rather than bought and sold twice an hour. (Reported by a community member — thank you.)
+
+- FIX: a vehicle could retire at the terminus with nothing of its own line there to take the next departure, on a line whose vehicle count had gone up and then down again. The mod deliberately remembers a retirement decision so that a brief moment with no vehicle at the terminus does not cancel it — but that memory was never cleared when the count went UP and the retirement was called off, so it could be reused later to skip the "is this departure covered?" check. Found while researching a feature request rather than reported, and it had been accumulating quietly.
+
+v0.4.1 [BETA] — Vehicles no longer leave passengers behind at the door
 
 - FIX: vehicles were throwing off passengers who were already boarding. Reported as "the bus fills up, then empties down to a certain amount, then leaves", with the queue growing at busy stations. Cause: the base game counts someone as a passenger the moment they START WALKING to the vehicle, so the mod's on-time departure was cancelling everyone still crossing the platform and putting them back in the queue. It happened on every departure of every timetabled vehicle. (Reported by a community member — thank you.)
 
@@ -93,8 +99,6 @@ v0.4.0 [BETA] — Missed trips, saved travel times and a clean uninstall
 - FIX: assorted fleet issues — the mod and the game could disagree about a line's target count after loading, the per-line vehicle cap now applies on every path, and a diagnostic message no longer repeats every few frames.
 
 v0.3.5 — Optional "Manage vehicle count" toggle, so a dedicated fleet mod can own vehicle counts instead.
-
-v0.3.4 — Localized into 11 languages. Machine-translated, community corrections welcome.
 
 </ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->

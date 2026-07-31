@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useContext } from "react";
 import { bindValue, useValue, trigger } from "cs2/api";
-import { FloatingButton } from "cs2/ui";
+import { FloatingButton, ConfirmationDialog, DialogStack } from "cs2/ui";
 import { useT } from "mods/i18n";
 import ICON from "../transittimetables-icon.svg";
 
@@ -34,6 +34,17 @@ const nightHours$ = bindValue<string>(G, "nightHours", "");
 const selStopHas$ = bindValue<boolean>(G, "selStopHas", false);
 const selStopBoard$ = bindValue<string>(G, "selStopBoard", "[]");
 const autoOpen$ = bindValue<number>(G, "autoOpen", 0);
+// One-time migration notice. A counter rather than a flag, so a late-mounting host still sees the change.
+const noticeSeq$ = bindValue<number>(G, "noticeSeq", 0);
+// Last counter value we have RAISED a dialog for. Module-level, NOT a useRef inside the component, and this matters
+// twice over:
+//  1. `useRef(seq)` would seed the baseline from whatever the counter already holds at first render. If C# bumped it
+//     before the Game module mounted, the very first render would see 1 and treat it as already-seen — no dialog,
+//     ever, while C# sat waiting for an answer that could not come. That is the exact opposite of the late-mount
+//     guarantee the counter exists to provide.
+//  2. It has to OUTLIVE the component. The C# counter is static and survives across city loads within one session,
+//     so a per-mount baseline of 0 would re-fire the dialog every time the host remounted.
+let _noticeSeen = 0;
 
 // Module-level open state for the floating stop panel.
 let _open = false;
@@ -235,7 +246,7 @@ export const TimetableEditor = () => {
 const StopBoard = () => {
     const raw = useValue(selStopBoard$) as string;
     const t = useT();
-    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; d: string }> = [];
+    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; est?: boolean; d: string }> = [];
     try { board = JSON.parse(raw || "[]"); } catch { board = []; }
     const ttCount = board.filter((e) => e.tt).length;
     const termBtn = {
@@ -256,6 +267,11 @@ const StopBoard = () => {
                         <div style={{ fontSize: "12rem", color: e.tt ? "rgb(120, 210, 130)" : "rgba(255,255,255,0.45)" }}>
                             {e.tt ? (e.d ? t("departs", "departs: {d}", { d: e.d }) : t("noDepartures", "no departures scheduled")) : t("notTimetabled", "not timetabled")}
                         </div>
+                        {/* The mod has not measured this stop yet, so these times come from the game's own travel
+                            estimate. Say so rather than printing them with the same confidence as measured ones. */}
+                        {e.tt && e.est && e.d ? (
+                            <div style={{ fontSize: "11rem", opacity: 0.45 }}>{t("estimatedTimes", "estimated, not yet measured")}</div>
+                        ) : null}
                         {e.tt && !e.term ? (
                             <button
                                 onClick={() => trigger(G, "setTerminusRow", i)}
@@ -290,6 +306,52 @@ export const TransitButton = () => {
     const t = useT();
     return <FloatingButton src={ICON} tooltipLabel={t("buttonTooltip", "Transit Timetables")} onSelect={() => setOpen(!_open)} />;
 };
+
+// The one-time "vehicle counts are changing" notice. Rendered with the GAME'S OWN dialog component pushed onto its
+// dialog stack, so it looks and behaves exactly like a vanilla confirmation (same shell, backdrop, button theme and
+// gamepad handling) while keeping our own localized strings and our own callbacks.
+//
+// Deliberately NOT the native appBindings.ShowConfirmationDialog path: that stores ONE global callback which any other
+// dialog silently overwrites, and it delivers over a fire-and-forget event whose listener only exists while the Game
+// screen is mounted — which is exactly when we fire.
+//
+// BUTTON MAPPING IS DELIBERATE AND LOAD-BEARING — do not "fix" it by putting the recommended action on `confirm`.
+// In the shipped component, Escape, the X, and the cancel button ALL route to onCancel; `cancellable={false}` removes
+// only the button, not the Escape path. So the safe default has to live on onCancel, which means the mod-keeps-managing
+// answer sits on `cancel` and the opt-out sits on `confirm`. The message is therefore phrased as a question the player
+// answers, so that declining ("No, let the mod manage them") reads naturally on a button the game styles as negative.
+export const MigrationNotice = () => {
+    const seq = useValue(noticeSeq$) as number;
+    const stack = useContext(DialogStack);
+    const t = useT();
+    useEffect(() => {
+        if (seq === 0 || seq === _noticeSeen) return;
+        if (!stack || typeof stack.showDialog !== "function") return;
+        _noticeSeen = seq;   // only AFTER we know we can actually raise it
+        stack.showDialog(
+            <ConfirmationDialog
+                title={t("noticeTitle", "Vehicle counts are changing")}
+                message={
+                    <div>
+                        <div>{t("noticeBody", "This version measures each line's real loop and provisions what the timetable actually requires, which means more vehicles than before.")}</div>
+                        <div style={{ marginTop: "10rem" }}>
+                            {t("noticeAsk", "Would you rather set vehicle counts yourself?")}
+                        </div>
+                        <div style={{ marginTop: "10rem", opacity: 0.7 }}>
+                            {t("noticeWhere", "You can change this at any time in Options, under Vehicle count management.")}
+                        </div>
+                    </div>
+                }
+                confirm={t("noticeOff", "Yes, I'll manage them")}
+                cancel={t("noticeKeep", "No, let the mod manage them")}
+                onConfirm={() => trigger(G, "noticeAnswer", false)}
+                onCancel={() => trigger(G, "noticeAnswer", true)}
+            />
+        );
+    }, [seq, stack, t]);
+    return null;
+};
+
 
 export const TransitPanelHost = () => {
     const open = useOpen();

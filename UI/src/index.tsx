@@ -1,6 +1,6 @@
 import { ModRegistrar, getModule } from "cs2/modding";
 import { Safe } from "mods/safe";
-import { TimetableEditor, TransitButton, TransitPanelHost } from "mods/transit-panel";
+import { TimetableEditor, TransitButton, TransitPanelHost, MigrationNotice } from "mods/transit-panel";
 
 const register: ModRegistrar = (moduleRegistry) => {
     console.info("[TransitTimetables] register() running");
@@ -30,6 +30,13 @@ const register: ModRegistrar = (moduleRegistry) => {
     try {
         moduleRegistry.append("GameTopRight", TransitButton);
         moduleRegistry.append("Game", TransitPanelHost);
+        // One-time migration notice. Inside the Safe boundary so a cs2/ui shape change across a game patch degrades to
+        // "no notice" rather than taking the HUD down with it.
+        moduleRegistry.append("Game", () => (
+            <Safe>
+                <MigrationNotice />
+            </Safe>
+        ));
         console.info("[TransitTimetables] panel registered");
     } catch (e) {
         console.info("[TransitTimetables] panel error: " + String(e));
