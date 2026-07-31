@@ -1154,7 +1154,22 @@ namespace TransitTimetables
                 // lapped) KEEPS that slot and departs late; it must not grab a fresh one — that would be the very
                 // "wait a whole cycle" bug we are fixing.
                 bool lapped = lapServed != null && lapServed.Contains(veh);
-                if (!haveSlot || (lapped && frame >= slotFrame))
+                // ...but a slot assigned SINCE THIS BUS ARRIVED at the terminus belongs to the visit it is making right
+                // now, and must survive its own minute passing. Without this test the gate re-fires the moment the
+                // clock reaches the slot: a bus still loading passengers at its departure minute was handed the NEXT
+                // slot and sat through a whole extra headway (live-reported). The lap flag alone cannot tell "came
+                // round for its next run" from "has not managed to leave yet" — both are lapped with a past slot.
+                //
+                // Deliberately NOT the catch-up branch's fix (clearing the lap flag). That works there because catch-up
+                // is rare, but the retirement commit below ALSO reads lapServed, so clearing it on every bus on every
+                // lap would stop surplus vehicles retiring at the terminus.
+                //
+                // Keeping a past slot cannot strand anyone: the GO branch computes until = slot + offset - frame, which
+                // is already negative, so the bus departs as soon as boarding lets it.
+                bool slotFromThisVisit = haveSlot
+                                         && m_ArrivedFrame.TryGetValue(veh, out uint arrivedAt)
+                                         && slotFrame >= arrivedAt;
+                if (!haveSlot || (lapped && frame >= slotFrame && !slotFromThisVisit))
                 {
                     int untilNext = ScheduleMath.NextDeparture(s, sch, customSch, sched, nowMin) - nowMin; // minutes to next slot
                     int interval = ScheduleMath.IntervalFor(s, sch, customSch, nowMin, sched);            // active headway (hysteresis base)

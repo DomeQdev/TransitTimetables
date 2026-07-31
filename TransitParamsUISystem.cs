@@ -53,6 +53,8 @@ namespace TransitTimetables
         // sub-objects for a station BUILDING (train / metro / airport / harbor). Cached (keyed by the raw selection) so
         // a selected station isn't re-walked every UI tick.
         private readonly List<Entity> m_SelStops = new List<Entity>();
+        // Where a selection's stops are gathered before they are allowed to replace m_SelStops — see ResolveSelectedStops.
+        private readonly List<Entity> m_ScratchStops = new List<Entity>();
         private Entity m_ResolveRawSel = Entity.Null;
         // Per board ROW, the (line, stop) it represents — so each row's OWN "Set as terminus" button targets exactly that
         // line at exactly the platform it uses here. Built in lockstep with the board JSON (row i == m_BoardRows[i]).
@@ -421,22 +423,36 @@ namespace TransitTimetables
             if (sel == m_ResolveRawSel)
                 return; // cached — m_SelStops already holds this selection's stops
             m_ResolveRawSel = sel;
-            m_SelStops.Clear();
+            m_ScratchStops.Clear();
             if (IsStopEntity(sel))
-                m_SelStops.Add(sel);
+                m_ScratchStops.Add(sel);
             else
                 CollectAllStationStops(sel, 0);
+            // KEEP THE LAST BOARD when the new selection is not a stop at all. Clicking the magnifier next to a line in
+            // a stop's info panel selects the LINE, which used to resolve to zero stops, blank the board and close the
+            // panel — so looking up the line you were reading departures for threw those departures away.
+            //
+            // Only a selection that DOES resolve to stops replaces the board. Anything else (a line, a building, empty
+            // ground) leaves the previous stop showing, and the panel's own X still closes it. This does not revive
+            // issue #3: that was an EMPTY "select a stop" hint lingering over an unrelated panel, and an empty result
+            // no longer overwrites anything.
+            if (m_ScratchStops.Count > 0)
+            {
+                m_SelStops.Clear();
+                m_SelStops.AddRange(m_ScratchStops);
+            }
         }
 
-        // Depth-bounded descent of a building's sub-object graph, adding every platform stop to m_SelStops (deduped).
+        // Depth-bounded descent of a building's sub-object graph, adding every platform stop to m_ScratchStops (deduped).
         // Recurses into every sub-object, matching vanilla's connected-line walk. The depth cap is pure defense; real
-        // station nesting is 2-3 levels.
+        // station nesting is 2-3 levels. Fills the SCRATCH list, not m_SelStops: the caller only promotes it when the
+        // walk actually found something, so a non-stop selection cannot blank an open board.
         private void CollectAllStationStops(Entity root, int depth)
         {
             if (depth > 5)
                 return;
-            if (IsStopEntity(root) && !m_SelStops.Contains(root))
-                m_SelStops.Add(root);
+            if (IsStopEntity(root) && !m_ScratchStops.Contains(root))
+                m_ScratchStops.Add(root);
             if (!EntityManager.HasBuffer<Game.Objects.SubObject>(root))
                 return;
             DynamicBuffer<Game.Objects.SubObject> subs = EntityManager.GetBuffer<Game.Objects.SubObject>(root, isReadOnly: true);

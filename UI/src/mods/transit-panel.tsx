@@ -315,11 +315,14 @@ export const TransitButton = () => {
 // dialog silently overwrites, and it delivers over a fire-and-forget event whose listener only exists while the Game
 // screen is mounted — which is exactly when we fire.
 //
-// BUTTON MAPPING IS DELIBERATE AND LOAD-BEARING — do not "fix" it by putting the recommended action on `confirm`.
-// In the shipped component, Escape, the X, and the cancel button ALL route to onCancel; `cancellable={false}` removes
-// only the button, not the Escape path. So the safe default has to live on onCancel, which means the mod-keeps-managing
-// answer sits on `cancel` and the opt-out sits on `confirm`. The message is therefore phrased as a question the player
-// answers, so that declining ("No, let the mod manage them") reads naturally on a button the game styles as negative.
+// BUTTON MAPPING — the two things we want cannot both be true, so this is a decided trade-off, not an oversight.
+// In the shipped component, Escape, the X, and the cancel button ALL route to onCancel, and `cancellable={false}`
+// removes only the button, not the Escape path. The game styles `confirm` green and `cancel` red. So:
+//   - recommended action green  =>  it must sit on `confirm`  =>  Escape lands on the OTHER one
+//   - Escape safe               =>  recommended sits on `cancel`, i.e. rendered red
+// We chose GREEN, seen on screen: "Let the mod decide" is the green confirm. Escape and the X therefore resolve to
+// "Do not let the mod decide". That is reversible and the body text says where the setting lives, so an accidental
+// dismissal costs a trip to Options rather than anything permanent.
 export const MigrationNotice = () => {
     const seq = useValue(noticeSeq$) as number;
     const stack = useContext(DialogStack);
@@ -331,21 +334,18 @@ export const MigrationNotice = () => {
         stack.showDialog(
             <ConfirmationDialog
                 title={t("noticeTitle", "Vehicle counts are changing")}
-                message={
-                    <div>
-                        <div>{t("noticeBody", "This version measures each line's real loop and provisions what the timetable actually requires, which means more vehicles than before.")}</div>
-                        <div style={{ marginTop: "10rem" }}>
-                            {t("noticeAsk", "Would you rather set vehicle counts yourself?")}
-                        </div>
-                        <div style={{ marginTop: "10rem", opacity: 0.7 }}>
-                            {t("noticeWhere", "You can change this at any time in Options, under Vehicle count management.")}
-                        </div>
-                    </div>
-                }
-                confirm={t("noticeOff", "Yes, I'll manage them")}
-                cancel={t("noticeKeep", "No, let the mod manage them")}
-                onConfirm={() => trigger(G, "noticeAnswer", false)}
-                onCancel={() => trigger(G, "noticeAnswer", true)}
+                // message MUST be a plain string, despite the ReactNode type. The dialog pipes it through the game's
+                // own text renderer — Children.toArray(msg).flatMap(e => ET(dc(i, e, "\n"))) — which expects strings
+                // and splits paragraphs on "\n". Passing JSX renders the literal text "[div/]" instead of the body.
+                message={[
+                    t("noticeBody", "This version measures each line's real loop and provisions what the timetable actually requires, which means more vehicles than before."),
+                    t("noticeAsk", "Would you rather set vehicle counts yourself?"),
+                    t("noticeWhere", "You can change this at any time in Options, under Vehicle count."),
+                ].join("\n")}
+                confirm={t("noticeKeep", "Let the mod decide")}
+                cancel={t("noticeOff", "Do not let the mod decide")}
+                onConfirm={() => trigger(G, "noticeAnswer", true)}
+                onCancel={() => trigger(G, "noticeAnswer", false)}
             />
         );
     }, [seq, stack, t]);
