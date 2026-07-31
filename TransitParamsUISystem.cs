@@ -611,31 +611,46 @@ namespace TransitTimetables
             int estMin  = (int)System.Math.Round(dur * um);
             int realMin = (int)System.Math.Round(dur * um * corr);
             bool measured = m_Dispatch.LineCorrectionMeasured(line);
-            var sb = new StringBuilder();
-            sb.Append("Real loop ~").Append(realMin).Append(" min (")
-              .Append(corr.ToString("0.0")).Append("x the ").Append(estMin).Append("-min estimate, ")
-              .Append(measured ? "measured" : "estimated").Append("). ");
+            // EMIT DATA, NOT A SENTENCE. This used to build the English text here with a StringBuilder, which meant all
+            // 11 translated languages saw English — it was the last piece of user-facing text not going through the
+            // localization pipeline. It cannot be fixed by translating the fragments and gluing them back together in
+            // English order, because clause order differs between languages. So the numbers go to the UI and the whole
+            // sentence is assembled there from a per-language template.
+            //
+            // "mode" picks which second sentence the UI renders:
+            //   notmine   — the mod is not setting this line's count; n = what the headway would need
+            //   prov      — the mod is sizing it; n = the count it actually SETTLED on (after the cap, the shrink
+            //               hysteresis and the stability gate). Re-deriving n here is what once made the panel print
+            //               one number in the row above and a different one in this sentence, two rows apart.
+            //   settling  — the mod will size it, but the duration estimate has not held steady yet
             Setting s = S;
-            // One branch per VehicleCounts mode. "Another mod decides" and "I decide" both mean the mod is not the one
-            // choosing the number, but they are NOT the same sentence — telling a player who set the count themselves
-            // that "another fleet mod" owns it is simply wrong.
+            string mode;
+            int n;
             if (s == null || !s.ModSizesFleet)
             {
-                // Deliberately does NOT say "another mod is setting the count". The migration notice's opt-out lands
-                // here too, and that player may have no fleet mod at all — the counts are simply back on vanilla's
-                // automatic sizing, or on whatever they set with the Assigned Vehicles slider. Say what is true in
-                // every case: this mod is not setting them, and here is what the headway would need.
-                int needFleet = ScheduleMath.DerivedFleet(dur * (measured ? m_Dispatch.LineCorrection(line, dur, true) : 1f), interval, um);
-                sb.Append("This headway needs ~").Append(needFleet)
-                  .Append(" vehicles. This mod is not setting the count.");
+                // Deliberately does NOT claim another mod owns the count. The migration notice's opt-out lands here
+                // too, and that player may have no fleet mod at all — their counts are simply back on vanilla's
+                // automatic sizing, or on whatever they set with the Assigned Vehicles slider.
+                mode = "notmine";
+                n = ScheduleMath.DerivedFleet(dur * (measured ? m_Dispatch.LineCorrection(line, dur, true) : 1f), interval, um);
             }
-            // Otherwise the mod IS sizing this line — so quote the number it actually settled on, not a fresh
-            // derivation. Re-deriving here skipped the cap, the shrink hysteresis and the stability gate, so the panel
-            // could print one count in the row above and a different one in this sentence, two lines apart.
             else if (m_Dispatch.TryPostedFleet(line, out int postedFleet))
-                sb.Append("Provisioning ~").Append(postedFleet).Append(" vehicles for it.");
+            {
+                mode = "prov";
+                n = postedFleet;
+            }
             else
-                sb.Append("Sizing this line as soon as its duration estimate settles.");
+            {
+                mode = "settling";
+                n = 0;
+            }
+            var sb = new StringBuilder();
+            sb.Append("{\"real\":").Append(realMin)
+              .Append(",\"est\":").Append(estMin)
+              .Append(",\"corr\":\"").Append(corr.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)).Append('"')
+              .Append(",\"meas\":").Append(measured ? "true" : "false")
+              .Append(",\"mode\":\"").Append(mode).Append('"')
+              .Append(",\"n\":").Append(n).Append('}');
             return sb.ToString();
         }
 

@@ -124,6 +124,13 @@ namespace TransitTimetables
                 { "TransitTimetables.ui.panelTitle", T("ui.panelTitle") },
                 { "TransitTimetables.ui.panelHint", T("ui.panelHint") },
                 { "TransitTimetables.ui.estimatedTimes", T("ui.estimatedTimes") },
+                // The "real loop" line. Built in the UI from these templates, NOT in C# — clause order differs between
+                // languages, so each one needs a whole sentence rather than translated fragments glued in English order.
+                { "TransitTimetables.ui.realLoopMeasured", T("ui.realLoopMeasured") },
+                { "TransitTimetables.ui.realLoopEstimated", T("ui.realLoopEstimated") },
+                { "TransitTimetables.ui.provisioning", T("ui.provisioning") },
+                { "TransitTimetables.ui.notSetByMod", T("ui.notSetByMod") },
+                { "TransitTimetables.ui.sizingSoon", T("ui.sizingSoon") },
                 // One-time migration notice (rendered by the mod's own React dialog, not the Options page).
                 { "TransitTimetables.ui.noticeTitle", T("ui.noticeTitle") },
                 { "TransitTimetables.ui.noticeBody", T("ui.noticeBody") },

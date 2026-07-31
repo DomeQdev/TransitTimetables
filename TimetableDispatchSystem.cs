@@ -431,13 +431,18 @@ namespace TransitTimetables
                     RestoreUnbunching(line, tl);
                     if (m_LastFleet.ContainsKey(line))
                     {
-                        // We were managing this line — hand it back to vanilla EXACTLY ONCE (m_LastFleet is cleared
-                        // just below, so later disabled frames skip this): release any bus we were holding so it
-                        // departs immediately instead of idling to a stale scheduled frame (#8), and deactivate the
-                        // mod-applied vehicle-count policy so the fleet reverts to vanilla's automatic count rather
-                        // than staying frozen at the last derived number — which otherwise persists into the save (#4).
+                        // We were managing this line — hand it back EXACTLY ONCE (m_LastFleet is cleared just below, so
+                        // later disabled frames skip this): release any bus we were holding so it departs immediately
+                        // instead of idling to a stale scheduled frame (#8), and drop the mod-applied vehicle count so
+                        // it does not stay frozen at the last derived number and persist into the save (#4).
+                        //
+                        // HEAL, not clear. TryClearLineFleet ALSO deactivates the line's vehicle-count policy — and
+                        // that policy is where the player's own "Assigned Vehicles" number lives, so switching the mod
+                        // off used to throw away a count they had set by hand. "Off" must undo what the MOD did and
+                        // nothing else. The heal rebuilds the slot from the line's own policies: our orphaned delta
+                        // goes, a hand-set count survives untouched, and a line with no policy reverts to automatic.
                         ReleaseHeldVehicles(line, frame);
-                        m_Fleet.TryClearLineFleet(line);
+                        m_Fleet.TryHealLeftoverFleetModifier(line);
                     }
                     m_LastFleet.Remove(line);
                     m_PostedFleet.Remove(line);   // stop advertising a count for a line we no longer size

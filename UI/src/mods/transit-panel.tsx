@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useContext } from "react";
 import { bindValue, useValue, trigger } from "cs2/api";
-import { FloatingButton, ConfirmationDialog, DialogStack } from "cs2/ui";
+import { FloatingButton, ConfirmationDialog, DialogStack, DialogContext } from "cs2/ui";
 import { useT } from "mods/i18n";
 import ICON from "../transittimetables-icon.svg";
 
@@ -150,6 +150,31 @@ const WindowRow = ({ label, start$, end$, trigStart, trigEnd }:
 
 // The timetable editor — injected into the native line info panel. Renders nothing unless a transport line is
 // selected (self-gates on selHas, so it's inert on non-line selections and work routes).
+// The "real loop" line. C# sends NUMBERS, not a sentence, and the whole sentence is built here from a per-language
+// template — this was the last user-facing text in the mod that was assembled in C# and therefore English in all 11
+// translated languages. It cannot be done by translating fragments and gluing them in English order, because clause
+// order differs between languages, so each language gets a complete template with {placeholders}.
+const RealInfo = ({ raw }: { raw: string }) => {
+    const t = useT();
+    if (!raw) return null;
+    let d: { real: number; est: number; corr: string; meas: boolean; mode: string; n: number };
+    try { d = JSON.parse(raw); } catch { return null; }
+    if (!d || typeof d.real !== "number") return null;
+    const vars = { real: d.real, est: d.est, corr: d.corr, n: d.n };
+    const head = d.meas
+        ? t("realLoopMeasured", "Real loop ~{real} min ({corr}x the {est}-min estimate, measured).", vars)
+        : t("realLoopEstimated", "Real loop ~{real} min ({corr}x the {est}-min estimate, estimated).", vars);
+    const tail =
+        d.mode === "prov" ? t("provisioning", "Provisioning ~{n} vehicles for it.", vars)
+        : d.mode === "notmine" ? t("notSetByMod", "This headway needs ~{n} vehicles. This mod is not setting the count.", vars)
+        : t("sizingSoon", "Sizing this line as soon as its duration estimate settles.");
+    return (
+        <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", marginBottom: "6rem", lineHeight: 1.35 }}>
+            {head + " " + tail}
+        </div>
+    );
+};
+
 export const TimetableEditor = () => {
     const has = useValue(selHas$);
     const on = useValue(selTtEnabled$);
@@ -190,11 +215,7 @@ export const TimetableEditor = () => {
                     <div style={{ fontSize: "12rem", opacity: 0.7, marginBottom: "6rem" }}>
                         {t("ttNext", "next: {n}", { n: next || "—" })}
                     </div>
-                    {realInfo ? (
-                        <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", marginBottom: "6rem", lineHeight: 1.35 }}>
-                            {realInfo}
-                        </div>
-                    ) : null}
+                    <RealInfo raw={realInfo} />
                     {/* ±1 / ±10, deliberately identical to the interval rows below — one mental model for the panel.
                         ±1 matters: staggering first departures a minute apart across lines that share a stop is a real
                         technique, and the old ±15 (then ±5) could not express it.
@@ -315,14 +336,40 @@ export const TransitButton = () => {
 // dialog silently overwrites, and it delivers over a fire-and-forget event whose listener only exists while the Game
 // screen is mounted — which is exactly when we fire.
 //
-// BUTTON MAPPING — the two things we want cannot both be true, so this is a decided trade-off, not an oversight.
-// In the shipped component, Escape, the X, and the cancel button ALL route to onCancel, and `cancellable={false}`
-// removes only the button, not the Escape path. The game styles `confirm` green and `cancel` red. So:
-//   - recommended action green  =>  it must sit on `confirm`  =>  Escape lands on the OTHER one
-//   - Escape safe               =>  recommended sits on `cancel`, i.e. rendered red
-// We chose GREEN, seen on screen: "Let the mod decide" is the green confirm. Escape and the X therefore resolve to
-// "Do not let the mod decide". That is reversible and the body text says where the setting lives, so an accidental
-// dismissal costs a trip to Options rather than anything permanent.
+// The opt-out, rendered as dialog CONTENT rather than as the dialog's cancel button — see MigrationNotice for why.
+// Closes the dialog itself via DialogContext.onClose, which is the very context the dialog component consumes
+// internally (verified: cs2/ui exports DialogContext as the same object the dialog reads). Calling it directly closes
+// WITHOUT firing onCancel, so this cannot double-answer.
+const NoticeOptOut = () => {
+    const dlg = useContext(DialogContext);
+    const t = useT();
+    return (
+        <div style={{ display: "flex", justifyContent: "center", marginTop: "4rem" }}>
+            <button
+                onClick={() => {
+                    trigger(G, "noticeAnswer", false);
+                    if (dlg && typeof dlg.onClose === "function") dlg.onClose();
+                }}
+                style={{
+                    cursor: "pointer", padding: "5rem 14rem", borderRadius: "4rem", fontSize: "12rem",
+                    color: "white", opacity: 0.75, background: "rgba(90, 100, 115, 0.9)", pointerEvents: "auto",
+                } as any}
+            >
+                {t("noticeOff", "Do not let the mod decide")}
+            </button>
+        </div>
+    );
+};
+
+// BUTTON MAPPING — this looks odd and is deliberate. The requirement is BOTH that the recommended action is the green
+// one AND that Escape / the X mean "let the mod decide". Those cannot both be met with the dialog's own two buttons:
+// Escape, the X and the cancel button all route to the SAME onCancel handler, and nothing distinguishes them.
+//
+// So the dialog is given only ONE button. `confirm` (green) is "Let the mod decide"; `cancellable={false}` suppresses
+// the red cancel button entirely; and onCancel — which is still what Escape and the X fire — ALSO answers "let the mod
+// decide". The opt-out moves into the dialog's content as our own button, which we control completely.
+//
+// Net: green is the recommended action, every dismissal path is the safe one, and opting out takes a deliberate click.
 export const MigrationNotice = () => {
     const seq = useValue(noticeSeq$) as number;
     const stack = useContext(DialogStack);
@@ -343,10 +390,12 @@ export const MigrationNotice = () => {
                     t("noticeWhere", "You can change this at any time in Options, under Vehicle count."),
                 ].join("\n")}
                 confirm={t("noticeKeep", "Let the mod decide")}
-                cancel={t("noticeOff", "Do not let the mod decide")}
+                cancellable={false}
                 onConfirm={() => trigger(G, "noticeAnswer", true)}
-                onCancel={() => trigger(G, "noticeAnswer", false)}
-            />
+                onCancel={() => trigger(G, "noticeAnswer", true)}
+            >
+                <NoticeOptOut />
+            </ConfirmationDialog>
         );
     }, [seq, stack, t]);
     return null;

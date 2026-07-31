@@ -102,35 +102,21 @@ namespace TransitTimetables
             return true;
         }
 
-        // Deactivate a mod-applied vehicle-count policy so the line reverts to vanilla's automatic vehicle count —
-        // used when a timetable is switched off. Without it the line stays pinned at the last derived count, and that
-        // override is serialized into the save with no timetable left to explain it. (A previously player-set manual
-        // count on the same line is also cleared to automatic; re-pin it via the vanilla slider if wanted.)
-        public bool TryClearLineFleet(Entity line)
-        {
-            // Reset the line's own VehicleInterval modifier to default (delta 0) so it reverts to vanilla's automatic
-            // count immediately, and deactivate any vehicle-count policy an OLDER version of this mod may have set
-            // (so it doesn't get restored by a later re-lerp). Robust regardless of re-lerp timing.
-            if (EntityManager.HasBuffer<RouteModifier>(line))
-            {
-                DynamicBuffer<RouteModifier> mods = EntityManager.GetBuffer<RouteModifier>(line);
-                int idx = (int)RouteModifierType.VehicleInterval;
-                if (mods.Length > idx)
-                {
-                    RouteModifier m = mods[idx];
-                    if (m.m_Delta.x != 0f || m.m_Delta.y != 0f) { m.m_Delta.x = 0f; m.m_Delta.y = 0f; mods[idx] = m; }
-                }
-            }
-            if (m_VehicleCountPolicy == Entity.Null)
-                ResolvePolicy();
-            if (m_VehicleCountPolicy != Entity.Null)
-                m_Policies.SetPolicy(line, m_VehicleCountPolicy, active: false);
-            return true;
-        }
+        // REMOVED: TryClearLineFleet. It zeroed the VehicleInterval slot AND called SetPolicy(active: false) on the
+        // line's vehicle-count policy — and that policy is where the PLAYER's own "Assigned Vehicles" number lives, so
+        // every path that used it (timetable off, master switch off, handing counts to another mod) silently destroyed
+        // a count the player had set by hand. TryHealLeftoverFleetModifier below does the useful half correctly, so
+        // every caller now uses that instead and this had no callers left.
+        //
+        // One thing it did that the heal does not: deactivate a vehicle-count policy set by a PRE-v0.2.8 version of
+        // this mod, which really did drive the shared policy (that VehicleLimitSystem was deleted in v0.2.8). On such
+        // an ancient save the heal now preserves that policy rather than clearing it, because nothing distinguishes it
+        // from a player's own. That is the intended trade: "off undoes what the mod did, and leaves a hand-set count
+        // alone" cannot also mean "guess which counts were really yours".
 
         // Repair a leftover VehicleInterval RouteModifier this mod wrote DIRECTLY into a line's serialized buffer
-        // (TrySetLineFleet, to size the fleet) and never cleaned up when the user removed/disabled the mod WITHOUT first
-        // switching the line's timetable off (the only path that runs TryClearLineFleet). Left behind, that delta makes
+        // (TrySetLineFleet, to size the fleet) and never cleaned up when the user removed/disabled the mod. Left
+        // behind, that delta makes
         // the game read a far-too-tight vehicle spacing, which collapses the anti-bunching departure hold to ~0
         // (RouteUtils.CalculateDepartureFrame) — the "vehicles leave the stop immediately" residue in issue #7, and it
         // also pins the line's vehicle count. The v0.3.2 unbunching-factor heal never touched this, which is why it
