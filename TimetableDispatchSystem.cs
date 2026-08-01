@@ -161,9 +161,11 @@ namespace TransitTimetables
         // not a throttle for its own sake: a line can only absorb one extra vehicle per headway without bunching, so
         // this IS the maximum useful rate. (As the count climbs the headway shrinks, so the ramp accelerates itself.)
         //
-        // Symmetric on the way down, and that half matters as much: AbandonVehicles culls (continuing - target) in a
-        // single pass, odometer-sorted, so a decisive drop mass-retires buses — the retirement half of the odometer
-        // yo-yo. Stepping down one at a time turns that into an orderly retirement the drain can reason about.
+        // GROWTH ONLY — deliberately NOT symmetric. Shrinking is already handled, and better, by the slot-coupled
+        // drain in (3b): slotCovered releases at most one bus per departure slot, which is the same one-per-headway
+        // pacing arrived at from the departure side rather than the count side. Ramping the count down as well would
+        // stack a second throttle on that one AND feed the drain a reduced `surplus`, so `pending.Count > surplus`
+        // would wipe and rebuild the retirement latch far more often than the stale-latch repair intends.
         //
         // Deliberately does NOT apply to a line with no applied count yet (no m_LastFleet entry): that is INITIAL
         // provisioning, where there is no established service to bunch against and ramping would instead leave a new
@@ -640,14 +642,16 @@ namespace TransitTimetables
                             }
                         }
                         else m_ShrinkSince.Remove(line);                        // at or above target: no pending shrink
-                        // STAGGERED FLEET CHANGES (see m_RampSince for the full reasoning): walk the applied count
-                        // toward the target ONE VEHICLE PER DEPARTURE INTERVAL instead of stepping it, so vanilla's
-                        // one-request-per-tick depot path spaces the arrivals instead of emptying the depot in a clump.
+                        // STAGGERED FLEET GROWTH (see m_RampSince for the full reasoning): raise the applied count ONE
+                        // VEHICLE PER DEPARTURE INTERVAL instead of stepping it, so vanilla's one-request-per-tick
+                        // depot path spaces the arrivals instead of emptying the depot in a clump.
                         // Runs AFTER the cap and the shrink hysteresis: those decide WHETHER the count should move and
                         // to what; this only paces HOW FAST it gets there. A line with no applied count yet is skipped
                         // entirely (initial provisioning lands whole).
+                        // GROWTH ONLY: a DECREASE falls straight through to the write untouched, because the drain in
+                        // (3b) already paces retirement at one bus per departure slot. See m_RampSince.
                         bool rampStepped = false;
-                        if (m_LastFleet.TryGetValue(line, out int rampFrom) && desiredFleet != rampFrom)
+                        if (m_LastFleet.TryGetValue(line, out int rampFrom) && desiredFleet > rampFrom)
                         {
                             rampTarget = desiredFleet;   // remember where we are heading before taking one step
                             // The gate is the line's CURRENT headway. interval is in minutes; m_Fpm converts to frames,
@@ -659,7 +663,7 @@ namespace TransitTimetables
                                 // Take one step toward the target. m_RampSince is advanced ONLY if the write below
                                 // actually lands — if the stability gate or TrySetLineFleet rejects it, vanilla never
                                 // saw this step, so it must not consume the interval budget.
-                                desiredFleet = rampFrom + (desiredFleet > rampFrom ? 1 : -1);
+                                desiredFleet = rampFrom + 1;
                                 rampStepped = true;
                             }
                             else
@@ -667,7 +671,7 @@ namespace TransitTimetables
                                 desiredFleet = rampFrom;   // between steps: hold the count vanilla is already acting on
                             }
                         }
-                        else m_RampSince.Remove(line);     // at target (or never sized): no ramp in progress
+                        else m_RampSince.Remove(line);     // at target, shrinking, or never sized: no growth ramp running
                         // CRITICAL: desiredFleet must be computed on EVERY tick, NOT only when the stability gate passes.
                         // The drain below derives `surplus` from it, and when desiredFleet is 0 surplus is forced to 0,
                         // which SKIPS THE WHOLE DRAIN BLOCK — including the branch that strips vanilla's AbandonRoute off
