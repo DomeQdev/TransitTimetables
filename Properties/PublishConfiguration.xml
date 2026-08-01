@@ -9,7 +9,7 @@
 	<LongDescription>
 Turn any public-transport line into a scheduled service. Works for every passenger type: buses, trams, trains, metros, ferries and aircraft.
 
-WHAT'S NEW IN 0.5.1:
+WHAT'S NEW IN 0.5.0:
 
 - Your settings are saved properly now. All of my mods shared one internal name for their settings, and the game resolves them by that name, so all but one wrote nowhere and anything you changed came back as default the next session.
 - Vehicle counts are now a single setting with two states: the mod sizes your fleets, or you do.
@@ -75,7 +75,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-transittimetables-adjust-departure-times-and-frequencies-in-all-types-of-transit-systems.1936039/" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.5.1" />
+	<ModVersion Value="0.5.0" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -84,9 +84,9 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-v0.5.1 [BETA] — Vehicle counts become one setting, fleet growth is staggered, and your settings actually save
+v0.5.0 [BETA] — Vehicle counts become one setting, fleet growth is staggered, and your settings actually save
 
-This is the first build to carry all of the 0.4.x and 0.5.0 work together. Earlier 0.4.0 and 0.5.0 uploads went out without their changelogs, so their fixes are listed here.
+This build carries the 0.4.x work as well, so if you did not pick up those releases their fixes are listed here too.
 
 Still BETA: reviewed closely, but not played through a long test. Please report anything odd on GitHub. You can step back without uninstalling: set "Maximum stop time" to 0 for the old departure behaviour, hand vehicle counts back to yourself, or pause everything with the master switch.
 
