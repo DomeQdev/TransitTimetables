@@ -834,7 +834,20 @@ namespace TransitTimetables
                         }
                     }
 
-                    int surplus = desiredFleet > 0 ? liveCount - desiredFleet : 0;
+                    // Measure the surplus against the RAMP TARGET, not the step the ramp happens to be on.
+                    //
+                    // The growth ramp paces what vanilla is TOLD; it must not change what the mod BELIEVES the line
+                    // needs. Using the intermediate step here made the two fight: observed live at the 06:00 fleet-up,
+                    // line#873674 read live=30 target=16 ramp=53 surplus=14 pending=3 — the drain latched three buses
+                    // for retirement on a line the mod was actively trying to grow to fifty-three, purely because the
+                    // ramp was still on step 16. Without the ramp the target would have been 53 outright, the surplus
+                    // negative, and nothing would have retired.
+                    //
+                    // rampTarget is 0 whenever no growth ramp is in flight, so this is exactly the old expression in
+                    // every other state. It also cascades correctly: during growth the surplus clamps to 0, which
+                    // clears any stale latch through `pending.Count > surplus` and drops protectFromCull — both right,
+                    // because a growing line has no cull of ours to defend.
+                    int surplus = desiredFleet > 0 ? liveCount - System.Math.Max(desiredFleet, rampTarget) : 0;
 
                     // ramp=- when the count is settled, ramp=<n> while a staggered change is in flight (n = the final
                     // target the one-per-headway walk is heading for, target= being the step it is on right now). Lets
