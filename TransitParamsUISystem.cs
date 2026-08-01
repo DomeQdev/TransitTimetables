@@ -53,10 +53,18 @@ namespace TransitTimetables
         // sub-objects for a station BUILDING (train / metro / airport / harbor). Cached (keyed by the raw selection) so
         // a selected station isn't re-walked every UI tick.
         private readonly List<Entity> m_SelStops = new List<Entity>();
+        // Where a selection's stops are gathered before they are allowed to replace m_SelStops — see ResolveSelectedStops.
+        private readonly List<Entity> m_ScratchStops = new List<Entity>();
         private Entity m_ResolveRawSel = Entity.Null;
         // Per board ROW, the (line, stop) it represents — so each row's OWN "Set as terminus" button targets exactly that
         // line at exactly the platform it uses here. Built in lockstep with the board JSON (row i == m_BoardRows[i]).
         private readonly List<(Entity line, Entity stop)> m_BoardRows = new List<(Entity, Entity)>();
+        // Bumped once when the dispatch decides this city needs the one-time migration notice; the React side raises
+        // the dialog on the change. static so the dispatch (a different system) can request it without a lookup.
+        private static int m_NoticeSeq;
+        private GetterValueBinding<int> m_NoticeSeqB;
+        public static void RaiseMigrationNotice() => m_NoticeSeq++;
+
         private GetterValueBinding<bool> m_SelStopHasB;
         private GetterValueBinding<string> m_SelStopBoardB;
         private GetterValueBinding<int> m_AutoOpenB;
@@ -69,7 +77,7 @@ namespace TransitTimetables
         private GetterValueBinding<int> m_SelStopLineNumB;
         private GetterValueBinding<bool> m_SelStopLineServesB;
 
-        private static Setting S => Mod.ActiveSetting;
+        private static TransitTimetablesSetting S => Mod.ActiveSetting;
 
         protected override void OnCreate()
         {
@@ -129,6 +137,12 @@ namespace TransitTimetables
             AddBinding(m_AutoOpenB);
             AddBinding(m_SelStopLineNumB);
             AddBinding(m_SelStopLineServesB);
+            // One-time migration notice: a COUNTER, not a bool. A React effect that watches a counter cannot miss the
+            // signal even if it mounts after the bump — useValue hands it the current value on mount — whereas a
+            // fire-and-forget event raised while the Game screen is still mounting is simply dropped.
+            m_NoticeSeqB = new GetterValueBinding<int>(Group, "noticeSeq", () => m_NoticeSeq);
+            AddBinding(m_NoticeSeqB);
+            AddBinding(new TriggerBinding<bool>(Group, "noticeAnswer", TimetableDispatchSystem.AnswerMigrationNotice));
 
             AddBinding(new TriggerBinding<bool>(Group, "setSelTtEnabled", v => MutateSchedule(v, (ref TimetableSchedule sch, bool on) => sch.m_Enabled = on)));
             AddBinding(new TriggerBinding<int>(Group, "setSelTtFirst", v => MutateSchedule(v, (ref TimetableSchedule sch, int x) => sch.m_FirstDeparture = (ushort)Clamp(x, 0, 1439))));
@@ -162,6 +176,7 @@ namespace TransitTimetables
             if (!had)
                 EntityManager.AddComponent<TimetableSchedule>(sel);
             EntityManager.SetComponentData(sel, sch);
+            m_UiDirty = true;   // the player just edited: recompute now, don't wait for the minute to tick
         }
 
         private delegate void RefCustomPeakAction<T>(ref CustomPeakSchedule c, T value);
@@ -178,6 +193,7 @@ namespace TransitTimetables
             if (!had)
                 EntityManager.AddComponent<CustomPeakSchedule>(sel);
             EntityManager.SetComponentData(sel, c);
+            m_UiDirty = true;   // ditto
         }
 
         // Make board rows their line's terminus. onlyLine == Entity.Null → every line on the board (each to the platform
@@ -204,6 +220,7 @@ namespace TransitTimetables
         // Point a timetabled line's terminus at a stop it serves. No-op if the line has no timetable or already points there.
         private void SetLineTerminus(Entity line, Entity stop)
         {
+            m_UiDirty = true;   // terminus moved: the board's offsets and the star change immediately
             if (line == Entity.Null || stop == Entity.Null || !EntityManager.HasComponent<TimetableSchedule>(line))
                 return;
             TimetableSchedule sch = EntityManager.GetComponentData<TimetableSchedule>(line);
@@ -245,10 +262,32 @@ namespace TransitTimetables
         private static string Hr(int h) => (h < 10 ? "0" : "") + h;
         private static string Range(int a, int b) => Hr(a) + "-" + Hr(b);
 
+        // Recompute gate. THIS PHASE IGNORES GetUpdateInterval: only GameSimulation / EditorSimulation /
+        // LoadSimulation call the interval-aware UpdateSystem.Update overload, so a UIUpdate system runs on EVERY
+        // RENDERED FRAME no matter what interval it declares. Refresh() is not cheap — it walks the route waypoints,
+        // rebuilds the departure board JSON and re-derives every panel value — and it was running ~60x a second.
+        //
+        // Nothing it produces changes faster than the in-game MINUTE (departure times, the active interval, the
+        // window labels) except things the player just did, which set m_UiDirty. So recompute on: a selection
+        // change, a minute boundary, or an explicit edit. That is roughly one refresh per 182 frames instead of
+        // every frame, and the visible behaviour is identical because the bindings already suppressed the
+        // unchanged writes — we were paying to compute values that were then thrown away.
+        private int m_LastRefreshMinute = -1;
+        private Entity m_LastRefreshSel = Entity.Null;
+        private bool m_UiDirty = true;
+
         protected override void OnUpdate()
         {
             base.OnUpdate();
-            Refresh();
+            Entity sel = m_ToolSystem != null ? m_ToolSystem.selected : Entity.Null;
+            int nowMin = (int)(m_TimeSystem.normalizedTime * 1440f) % 1440;
+            if (m_UiDirty || sel != m_LastRefreshSel || nowMin != m_LastRefreshMinute)
+            {
+                m_UiDirty = false;
+                m_LastRefreshSel = sel;
+                m_LastRefreshMinute = nowMin;
+                Refresh();
+            }
             m_SelHasB.Update();
             m_SelTtEnabledB.Update();
             m_SelTtFirstB.Update();
@@ -273,11 +312,12 @@ namespace TransitTimetables
             m_AutoOpenB.Update();
             m_SelStopLineNumB.Update();
             m_SelStopLineServesB.Update();
+            m_NoticeSeqB.Update();
         }
 
         private void Refresh()
         {
-            Setting s = S;
+            TransitTimetablesSetting s = S;
             Entity sel = m_ToolSystem != null ? m_ToolSystem.selected : Entity.Null;
             int nowMin = (int)(m_TimeSystem.normalizedTime * 1440f) % 1440;
 
@@ -314,12 +354,28 @@ namespace TransitTimetables
                 m_SelTtInterval = ScheduleMath.IntervalFor(s, sch, cps, nowMin, m_SelSchedule);
                 float dur = m_Fleet != null ? m_Fleet.LineStableDurationUnits(sel) : 0f;
                 float um = m_Timebase.UnitMinutes;
-                // The panel's fleet count = what the dispatch actually provisions: the corrected loop when
-                // ProvisionRealFleet is on (grow-only), else the estimate — so the number matches the buses on the road.
-                float fleetUnits = (s.ProvisionRealFleet && m_Dispatch != null && dur > 1f)
-                    ? dur * m_Dispatch.LineCorrection(sel, dur, true) : dur;
-                m_SelTtFleet = dur > 1f ? ScheduleMath.DerivedFleet(fleetUnits, m_SelTtInterval, um) : 0;
-                m_SelTtRealInfo = BuildRealInfo(sel, dur, um); // honest real-vs-estimate line (shown regardless of toggles)
+                // The panel's fleet count = EXACTLY the number the dispatch settled on. It used to re-derive it here
+                // from the same raw inputs, which silently dropped the three things the dispatch applies afterwards:
+                // the hard cap, the shrink hysteresis, and the post-load stability gate. The panel could therefore
+                // advertise a count the dispatch was actively refusing to write. Same rule as the departure board:
+                // one number, produced once, read here.
+                if (!s.Enabled)
+                    m_SelTtFleet = 0;   // handed back to vanilla; we are not setting a count, so do not show one
+                else if (m_Dispatch != null && m_Dispatch.TryPostedFleet(sel, out int postedFleet))
+                    m_SelTtFleet = postedFleet;
+                else
+                {
+                    // Not sized by the mod (another mod owns the count, or the line has no usable estimate yet) — show
+                    // what this headway WOULD need so the row is not blank, and let BuildRealInfo say who owns it.
+                    float fleetUnits = (m_Dispatch != null && dur > 1f && m_Dispatch.LineCorrectionMeasured(sel))
+                        ? dur * m_Dispatch.LineCorrection(sel, dur, true) : dur;
+                    m_SelTtFleet = dur > 1f ? ScheduleMath.DerivedFleet(fleetUnits, m_SelTtInterval, um) : 0;
+                }
+                // Master switch OFF => the dispatch has already handed this line back to vanilla (holds released, our
+                // fleet modifier healed, measurement dropped). Claiming "Provisioning ~6 vehicles for it" then is
+                // simply false, and the correction it quotes has degraded to the cold-start density prior anyway.
+                // Same rule as the departure prediction below: report nothing rather than something untrue.
+                m_SelTtRealInfo = s.Enabled ? BuildRealInfo(sel, dur, um) : "";
                 Entity term = TerminusWaypoint(sel, sch);
                 // No departure predictions while the master switch is off — buses run vanilla, so posting scheduled
                 // times would mislead. The config above stays visible/editable; only the live prediction is suppressed.
@@ -381,7 +437,7 @@ namespace TransitTimetables
         // (one entry). A train / metro / airport / harbor STATION is a building whose boarding points are platform
         // sub-objects, so collect ALL of them (the same graph vanilla walks in BuildingUtils.GetNumberOfConnectedLines)
         // so every line at the station is listed. Cached by the raw selection so a station isn't re-walked every UI tick.
-        private void ResolveSelectedStops(Setting s, Entity sel)
+        private void ResolveSelectedStops(TransitTimetablesSetting s, Entity sel)
         {
             if (s == null || sel == Entity.Null)
             {
@@ -392,22 +448,36 @@ namespace TransitTimetables
             if (sel == m_ResolveRawSel)
                 return; // cached — m_SelStops already holds this selection's stops
             m_ResolveRawSel = sel;
-            m_SelStops.Clear();
+            m_ScratchStops.Clear();
             if (IsStopEntity(sel))
-                m_SelStops.Add(sel);
+                m_ScratchStops.Add(sel);
             else
                 CollectAllStationStops(sel, 0);
+            // KEEP THE LAST BOARD when the new selection is not a stop at all. Clicking the magnifier next to a line in
+            // a stop's info panel selects the LINE, which used to resolve to zero stops, blank the board and close the
+            // panel — so looking up the line you were reading departures for threw those departures away.
+            //
+            // Only a selection that DOES resolve to stops replaces the board. Anything else (a line, a building, empty
+            // ground) leaves the previous stop showing, and the panel's own X still closes it. This does not revive
+            // issue #3: that was an EMPTY "select a stop" hint lingering over an unrelated panel, and an empty result
+            // no longer overwrites anything.
+            if (m_ScratchStops.Count > 0)
+            {
+                m_SelStops.Clear();
+                m_SelStops.AddRange(m_ScratchStops);
+            }
         }
 
-        // Depth-bounded descent of a building's sub-object graph, adding every platform stop to m_SelStops (deduped).
+        // Depth-bounded descent of a building's sub-object graph, adding every platform stop to m_ScratchStops (deduped).
         // Recurses into every sub-object, matching vanilla's connected-line walk. The depth cap is pure defense; real
-        // station nesting is 2-3 levels.
+        // station nesting is 2-3 levels. Fills the SCRATCH list, not m_SelStops: the caller only promotes it when the
+        // walk actually found something, so a non-stop selection cannot blank an open board.
         private void CollectAllStationStops(Entity root, int depth)
         {
             if (depth > 5)
                 return;
-            if (IsStopEntity(root) && !m_SelStops.Contains(root))
-                m_SelStops.Add(root);
+            if (IsStopEntity(root) && !m_ScratchStops.Contains(root))
+                m_ScratchStops.Add(root);
             if (!EntityManager.HasBuffer<Game.Objects.SubObject>(root))
                 return;
             DynamicBuffer<Game.Objects.SubObject> subs = EntityManager.GetBuffer<Game.Objects.SubObject>(root, isReadOnly: true);
@@ -418,7 +488,7 @@ namespace TransitTimetables
         // JSON: [{ "n": <lineNumber>, "tt": <bool>, "term": <bool>, "d": "<HH:MM, HH:MM, ...>" }, ...]
         // term = this stop is the line's EFFECTIVE terminus (explicit m_TerminusStop, else the first-stop fallback
         // that the dispatch system actually holds/retires at) — matches TerminusWaypoint below.
-        private string BuildStopBoard(Setting s, int nowMin)
+        private string BuildStopBoard(TransitTimetablesSetting s, int nowMin)
         {
             // One row per DISTINCT line across all resolved stops (a station's platforms); the first stop a line is
             // found on wins. m_BoardRows is kept in lockstep with the JSON (row i == m_BoardRows[i]) so each row's own
@@ -457,6 +527,7 @@ namespace TransitTimetables
                 bool tt = hasSched && sch.m_Enabled;
                 string dep = "";
                 bool term = false;
+                bool est = false;
                 if (tt)
                 {
                     Entity terminusWp = TerminusWaypoint(line, sch);
@@ -475,14 +546,16 @@ namespace TransitTimetables
                         m_BoardRows[i] = (line, stop);
                     }
                     Entity stopWp = WaypointForStop(line, stop);
-                    dep = DeparturesAtStop(line, sch, terminusWp, stopWp, ScheduleOf(line), nowMin);
+                    dep = DeparturesAtStop(line, sch, terminusWp, stopWp, ScheduleOf(line), nowMin, out est);
                     term = termStop != Entity.Null && termStop == stop;
                 }
                 if (i > 0) sb.Append(',');
                 sb.Append("{\"n\":").Append(number);
                 if (nm != null) sb.Append(",\"nm\":\"").Append(JsonEscape(nm)).Append('"');
                 sb.Append(",\"tt\":").Append(tt ? "true" : "false")
-                  .Append(",\"term\":").Append(term ? "true" : "false").Append(",\"d\":\"").Append(dep).Append("\"}");
+                  .Append(",\"term\":").Append(term ? "true" : "false")
+                  .Append(",\"est\":").Append(est ? "true" : "false")     // times derived from the game's estimate, not measured
+                  .Append(",\"d\":\"").Append(dep).Append("\"}");
             }
             sb.Append(']');
             return sb.ToString();
@@ -563,32 +636,46 @@ namespace TransitTimetables
             int estMin  = (int)System.Math.Round(dur * um);
             int realMin = (int)System.Math.Round(dur * um * corr);
             bool measured = m_Dispatch.LineCorrectionMeasured(line);
-            var sb = new StringBuilder();
-            sb.Append("Real loop ~").Append(realMin).Append(" min (")
-              .Append(corr.ToString("0.0")).Append("x the ").Append(estMin).Append("-min estimate, ")
-              .Append(measured ? "measured" : "estimated").Append("). ");
-            Setting s = S;
-            if (s != null && !s.ManageVehicleCount)
+            // EMIT DATA, NOT A SENTENCE. This used to build the English text here with a StringBuilder, which meant all
+            // 11 translated languages saw English — it was the last piece of user-facing text not going through the
+            // localization pipeline. It cannot be fixed by translating the fragments and gluing them back together in
+            // English order, because clause order differs between languages. So the numbers go to the UI and the whole
+            // sentence is assembled there from a per-language template.
+            //
+            // "mode" picks which second sentence the UI renders:
+            //   notmine   — the mod is not setting this line's count; n = what the headway would need
+            //   prov      — the mod is sizing it; n = the count it actually SETTLED on (after the cap, the shrink
+            //               hysteresis and the stability gate). Re-deriving n here is what once made the panel print
+            //               one number in the row above and a different one in this sentence, two rows apart.
+            //   settling  — the mod will size it, but the duration estimate has not held steady yet
+            TransitTimetablesSetting s = S;
+            string mode;
+            int n;
+            if (s == null || !s.ModSizesFleet)
             {
-                // The mod isn't setting the count (compat mode) — the number is only what THIS headway needs; you or
-                // another fleet mod own the actual fleet.
-                int needFleet = ScheduleMath.DerivedFleet(dur, interval, um);
-                sb.Append("Vehicle-count management is OFF: this headway needs ~").Append(needFleet)
-                  .Append(" vehicles, but you or another fleet mod set the count.");
+                // Deliberately does NOT claim another mod owns the count. The migration notice's opt-out lands here
+                // too, and that player may have no fleet mod at all — their counts are simply back on vanilla's
+                // automatic sizing, or on whatever they set with the Assigned Vehicles slider.
+                mode = "notmine";
+                n = ScheduleMath.DerivedFleet(dur * (measured ? m_Dispatch.LineCorrection(line, dur, true) : 1f), interval, um);
             }
-            else if (s != null && s.ProvisionRealFleet)
+            else if (m_Dispatch.TryPostedFleet(line, out int postedFleet))
             {
-                float fc = m_Dispatch.LineCorrection(line, dur, true);
-                int realFleet = ScheduleMath.DerivedFleet(dur * fc, interval, um);
-                sb.Append("Provisioning ~").Append(realFleet).Append(" vehicles for it.");
+                mode = "prov";
+                n = postedFleet;
             }
             else
             {
-                int estFleet = ScheduleMath.DerivedFleet(dur, interval, um);
-                int eff = estFleet > 0 ? (int)System.Math.Round((double)realMin / estFleet) : 0;
-                sb.Append("Running ~").Append(estFleet).Append(" vehicles -> effective headway ~")
-                  .Append(eff).Append(" min (you set ").Append(interval).Append(").");
+                mode = "settling";
+                n = 0;
             }
+            var sb = new StringBuilder();
+            sb.Append("{\"real\":").Append(realMin)
+              .Append(",\"est\":").Append(estMin)
+              .Append(",\"corr\":\"").Append(corr.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)).Append('"')
+              .Append(",\"meas\":").Append(measured ? "true" : "false")
+              .Append(",\"mode\":\"").Append(mode).Append('"')
+              .Append(",\"n\":").Append(n).Append('}');
             return sb.ToString();
         }
 
@@ -596,17 +683,37 @@ namespace TransitTimetables
         // stopWp. A terminus departure D appears here as D+offset, so we list terminus departures from now-offset.
         // Up to 6, "HH:MM, ...".
         private string DeparturesAtStop(Entity line, TimetableSchedule sch, Entity terminusWp, Entity stopWp, int schedule, int nowMin)
+            => DeparturesAtStop(line, sch, terminusWp, stopWp, schedule, nowMin, out _);
+
+        private string DeparturesAtStop(Entity line, TimetableSchedule sch, Entity terminusWp, Entity stopWp, int schedule, int nowMin,
+                                        out bool estimated)
         {
+            estimated = false;
             if (terminusWp == Entity.Null || stopWp == Entity.Null)
                 return "";
-            // Real-travel-time: post the MEASURED per-stop arrival offset the holds use (when opted in and learned), so
-            // the board matches what the buses actually do. Otherwise the game's estimate. No uniform factor.
+            // Post EXACTLY the offset the dispatch used to hold the vehicles. Deriving our own here is what made the
+            // printed board and the actual departures disagree — two calculations from the same inputs will always
+            // drift apart eventually, and once the dispatch started correcting for measured travel they diverged by
+            // up to ~45 minutes. There is now ONE number, produced by the dispatch and read here.
+            // The estimate below is a genuine fallback only: a line the dispatch is not ticking (no timetable) or a
+            // waypoint it has not walked yet. It cannot be corrected, because the correction lives in the dispatch.
             int offset;
-            if (S != null && S.RealisticTravelTime && m_Dispatch != null && stopWp != terminusWp
-                && m_Dispatch.TryStopOffsetMinutes(stopWp, out int measOff))
-                offset = measOff;
+            if (stopWp == terminusWp)
+                offset = 0;                                          // the terminus itself: exact by definition, no estimate
+            else if (m_Dispatch != null && m_Dispatch.TryPostedOffsetMinutes(stopWp, out int postedOff))
+            {
+                offset = postedOff;
+                // A posted offset is not automatically a MEASURED one. Until the line has timed enough real laps the
+                // ladder is inert and the dispatch posts the game's raw estimate — a correct number to hold to, but
+                // still a guess, and it will move once laps land. Flag it, or the board claims a precision it does not
+                // have. (Measurement is per LINE now, not per stop, so this is the whole line's state.)
+                estimated = m_Dispatch != null && !m_Dispatch.LineCorrectionMeasured(line);
+            }
             else
+            {
                 offset = (int)System.Math.Round(TravelUnitsBetween(line, terminusWp, stopWp) * m_Timebase.UnitMinutes);
+                estimated = true;                                    // say so on the board rather than implying precision
+            }
             // Clamp the seed so a stop whose first arrival is still ahead (offset > now, early morning) advertises the
             // real first bus rather than extrapolating yesterday's sequence backwards across midnight.
             int seed = nowMin - offset;

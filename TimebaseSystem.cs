@@ -14,7 +14,7 @@ namespace TransitTimetables
     // read (normalizedTime*1440) is already correct under any such mod; ONLY the minute<->frame scale is wrong when it
     // is hardcoded to 262144 (buses depart early, stop offsets & derived fleets inflate ~3.5x).
     //
-    // OPT-IN: gated by Setting.RealisticTripsCompat (default ON). When OFF, D is pinned to EXACTLY 262144, so every
+    // OPT-IN: gated by TransitTimetablesSetting.RealisticTripsCompat (default OFF). When OFF, D is pinned to EXACTLY 262144, so every
     // consumer produces bit-identical numbers to the pre-fix hardcoded constants — a true no-op. When ON with no
     // slow-time mod present, D still measures to 262144 (snap-to-vanilla), so those users are also unchanged.
     //
@@ -69,7 +69,7 @@ namespace TransitTimetables
 
         private static bool CompatEnabled()
         {
-            Setting s = Mod.ActiveSetting;
+            TransitTimetablesSetting s = Mod.ActiveSetting;
             return s != null && s.RealisticTripsCompat; // default OFF (pure vanilla clock) until the setting says otherwise
         }
 

@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useContext } from "react";
 import { bindValue, useValue, trigger } from "cs2/api";
-import { FloatingButton } from "cs2/ui";
+import { FloatingButton, ConfirmationDialog, DialogStack, DialogContext } from "cs2/ui";
 import { useT } from "mods/i18n";
 import ICON from "../transittimetables-icon.svg";
 
@@ -34,6 +34,17 @@ const nightHours$ = bindValue<string>(G, "nightHours", "");
 const selStopHas$ = bindValue<boolean>(G, "selStopHas", false);
 const selStopBoard$ = bindValue<string>(G, "selStopBoard", "[]");
 const autoOpen$ = bindValue<number>(G, "autoOpen", 0);
+// One-time migration notice. A counter rather than a flag, so a late-mounting host still sees the change.
+const noticeSeq$ = bindValue<number>(G, "noticeSeq", 0);
+// Last counter value we have RAISED a dialog for. Module-level, NOT a useRef inside the component, and this matters
+// twice over:
+//  1. `useRef(seq)` would seed the baseline from whatever the counter already holds at first render. If C# bumped it
+//     before the Game module mounted, the very first render would see 1 and treat it as already-seen — no dialog,
+//     ever, while C# sat waiting for an answer that could not come. That is the exact opposite of the late-mount
+//     guarantee the counter exists to provide.
+//  2. It has to OUTLIVE the component. The C# counter is static and survives across city loads within one session,
+//     so a per-mount baseline of 0 would re-fire the dialog every time the host remounted.
+let _noticeSeen = 0;
 
 // Module-level open state for the floating stop panel.
 let _open = false;
@@ -139,6 +150,31 @@ const WindowRow = ({ label, start$, end$, trigStart, trigEnd }:
 
 // The timetable editor — injected into the native line info panel. Renders nothing unless a transport line is
 // selected (self-gates on selHas, so it's inert on non-line selections and work routes).
+// The "real loop" line. C# sends NUMBERS, not a sentence, and the whole sentence is built here from a per-language
+// template — this was the last user-facing text in the mod that was assembled in C# and therefore English in all 11
+// translated languages. It cannot be done by translating fragments and gluing them in English order, because clause
+// order differs between languages, so each language gets a complete template with {placeholders}.
+const RealInfo = ({ raw }: { raw: string }) => {
+    const t = useT();
+    if (!raw) return null;
+    let d: { real: number; est: number; corr: string; meas: boolean; mode: string; n: number };
+    try { d = JSON.parse(raw); } catch { return null; }
+    if (!d || typeof d.real !== "number") return null;
+    const vars = { real: d.real, est: d.est, corr: d.corr, n: d.n };
+    const head = d.meas
+        ? t("realLoopMeasured", "Real loop ~{real} min ({corr}x the {est}-min estimate, measured).", vars)
+        : t("realLoopEstimated", "Real loop ~{real} min ({corr}x the {est}-min estimate, estimated).", vars);
+    const tail =
+        d.mode === "prov" ? t("provisioning", "Provisioning ~{n} vehicles for it.", vars)
+        : d.mode === "notmine" ? t("notSetByMod", "This headway needs ~{n} vehicles. This mod is not setting the count.", vars)
+        : t("sizingSoon", "Sizing this line as soon as its duration estimate settles.");
+    return (
+        <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", marginBottom: "6rem", lineHeight: 1.35 }}>
+            {head + " " + tail}
+        </div>
+    );
+};
+
 export const TimetableEditor = () => {
     const has = useValue(selHas$);
     const on = useValue(selTtEnabled$);
@@ -179,11 +215,7 @@ export const TimetableEditor = () => {
                     <div style={{ fontSize: "12rem", opacity: 0.7, marginBottom: "6rem" }}>
                         {t("ttNext", "next: {n}", { n: next || "—" })}
                     </div>
-                    {realInfo ? (
-                        <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", marginBottom: "6rem", lineHeight: 1.35 }}>
-                            {realInfo}
-                        </div>
-                    ) : null}
+                    <RealInfo raw={realInfo} />
                     {/* ±1 / ±10, deliberately identical to the interval rows below — one mental model for the panel.
                         ±1 matters: staggering first departures a minute apart across lines that share a stop is a real
                         technique, and the old ±15 (then ±5) could not express it.
@@ -235,7 +267,7 @@ export const TimetableEditor = () => {
 const StopBoard = () => {
     const raw = useValue(selStopBoard$) as string;
     const t = useT();
-    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; d: string }> = [];
+    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; est?: boolean; d: string }> = [];
     try { board = JSON.parse(raw || "[]"); } catch { board = []; }
     const ttCount = board.filter((e) => e.tt).length;
     const termBtn = {
@@ -256,6 +288,11 @@ const StopBoard = () => {
                         <div style={{ fontSize: "12rem", color: e.tt ? "rgb(120, 210, 130)" : "rgba(255,255,255,0.45)" }}>
                             {e.tt ? (e.d ? t("departs", "departs: {d}", { d: e.d }) : t("noDepartures", "no departures scheduled")) : t("notTimetabled", "not timetabled")}
                         </div>
+                        {/* The mod has not measured this stop yet, so these times come from the game's own travel
+                            estimate. Say so rather than printing them with the same confidence as measured ones. */}
+                        {e.tt && e.est && e.d ? (
+                            <div style={{ fontSize: "11rem", opacity: 0.45 }}>{t("estimatedTimes", "estimated, not yet measured")}</div>
+                        ) : null}
                         {e.tt && !e.term ? (
                             <button
                                 onClick={() => trigger(G, "setTerminusRow", i)}
@@ -291,6 +328,80 @@ export const TransitButton = () => {
     return <FloatingButton src={ICON} tooltipLabel={t("buttonTooltip", "Transit Timetables")} onSelect={() => setOpen(!_open)} />;
 };
 
+// The one-time "vehicle counts are changing" notice. Rendered with the GAME'S OWN dialog component pushed onto its
+// dialog stack, so it looks and behaves exactly like a vanilla confirmation (same shell, backdrop, button theme and
+// gamepad handling) while keeping our own localized strings and our own callbacks.
+//
+// Deliberately NOT the native appBindings.ShowConfirmationDialog path: that stores ONE global callback which any other
+// dialog silently overwrites, and it delivers over a fire-and-forget event whose listener only exists while the Game
+// screen is mounted — which is exactly when we fire.
+//
+// The opt-out, rendered as dialog CONTENT rather than as the dialog's cancel button — see MigrationNotice for why.
+// Closes the dialog itself via DialogContext.onClose, which is the very context the dialog component consumes
+// internally (verified: cs2/ui exports DialogContext as the same object the dialog reads). Calling it directly closes
+// WITHOUT firing onCancel, so this cannot double-answer.
+const NoticeOptOut = () => {
+    const dlg = useContext(DialogContext);
+    const t = useT();
+    return (
+        <div style={{ display: "flex", justifyContent: "center", marginTop: "4rem" }}>
+            <button
+                onClick={() => {
+                    trigger(G, "noticeAnswer", false);
+                    if (dlg && typeof dlg.onClose === "function") dlg.onClose();
+                }}
+                style={{
+                    cursor: "pointer", padding: "5rem 14rem", borderRadius: "4rem", fontSize: "12rem",
+                    color: "white", opacity: 0.75, background: "rgba(90, 100, 115, 0.9)", pointerEvents: "auto",
+                } as any}
+            >
+                {t("noticeOff", "Do not let the mod decide")}
+            </button>
+        </div>
+    );
+};
+
+// BUTTON MAPPING — this looks odd and is deliberate. The requirement is BOTH that the recommended action is the green
+// one AND that Escape / the X mean "let the mod decide". Those cannot both be met with the dialog's own two buttons:
+// Escape, the X and the cancel button all route to the SAME onCancel handler, and nothing distinguishes them.
+//
+// So the dialog is given only ONE button. `confirm` (green) is "Let the mod decide"; `cancellable={false}` suppresses
+// the red cancel button entirely; and onCancel — which is still what Escape and the X fire — ALSO answers "let the mod
+// decide". The opt-out moves into the dialog's content as our own button, which we control completely.
+//
+// Net: green is the recommended action, every dismissal path is the safe one, and opting out takes a deliberate click.
+export const MigrationNotice = () => {
+    const seq = useValue(noticeSeq$) as number;
+    const stack = useContext(DialogStack);
+    const t = useT();
+    useEffect(() => {
+        if (seq === 0 || seq === _noticeSeen) return;
+        if (!stack || typeof stack.showDialog !== "function") return;
+        _noticeSeen = seq;   // only AFTER we know we can actually raise it
+        stack.showDialog(
+            <ConfirmationDialog
+                title={t("noticeTitle", "Vehicle counts are changing")}
+                // message MUST be a plain string, despite the ReactNode type. The dialog pipes it through the game's
+                // own text renderer — Children.toArray(msg).flatMap(e => ET(dc(i, e, "\n"))) — which expects strings
+                // and splits paragraphs on "\n". Passing JSX renders the literal text "[div/]" instead of the body.
+                message={[
+                    t("noticeBody", "This version measures each line's real loop and provisions what the timetable actually requires, which means more vehicles than before."),
+                    t("noticeAsk", "Would you rather set vehicle counts yourself?"),
+                    t("noticeWhere", "You can change this at any time in Options, under Vehicle count."),
+                ].join("\n")}
+                confirm={t("noticeKeep", "Let the mod decide")}
+                cancellable={false}
+                onConfirm={() => trigger(G, "noticeAnswer", true)}
+                onCancel={() => trigger(G, "noticeAnswer", true)}
+            >
+                <NoticeOptOut />
+            </ConfirmationDialog>
+        );
+    }, [seq, stack, t]);
+    return null;
+};
+
+
 export const TransitPanelHost = () => {
     const open = useOpen();
     const stopHas = useValue(selStopHas$);
@@ -315,24 +426,17 @@ export const TransitPanelHost = () => {
         prevStopHas.current = stopHas;
     }, [stopHas]);
 
-    if (!open) {
-        // Closed but a stop is still selected: keep a slim reopen bar. Re-clicking the SAME stop can't reopen the
-        // panel (the game fires no reselect event for an already-selected entity), so offer this affordance instead.
-        if (!stopHas) return null;
-        return (
-            <div
-                onClick={() => setOpen(true)}
-                style={{
-                    position: "fixed", top: "90rem", right: "56rem", zIndex: 99999, pointerEvents: "auto",
-                    cursor: "pointer", background: "rgba(13, 21, 33, 0.97)", borderRadius: "6rem",
-                    padding: "8rem 12rem", color: "white", fontSize: "var(--fontSizeM)", fontWeight: "bold",
-                    textTransform: "uppercase", boxShadow: "0 4rem 24rem rgba(0,0,0,0.5)",
-                } as any}
-            >
-                {t("panelTitle", "DEPARTURES")} ▸
-            </div>
-        );
-    }
+    // X MEANS CLOSED — render nothing at all.
+    //
+    // This used to fall back to a slim "DEPARTURES ▸" bar at the panel's own position whenever a stop was still
+    // selected, so pressing X visibly shrank the panel instead of dismissing it and the corner never went empty.
+    // It existed for a real reason: re-clicking an ALREADY-SELECTED stop fires no event, so the C# autoOpen counter
+    // never increments and the selection alone cannot bring the panel back.
+    //
+    // That reason is already covered. TransitButton is appended to GameTopRight (index.tsx), is always mounted, and
+    // its onSelect toggles this same module-level _open — so the toolbar icon reopens the panel for the currently
+    // selected stop, which is exactly what the bar was standing in for. Nothing is stranded by closing here.
+    if (!open) return null;
     return (
         <div
             style={{

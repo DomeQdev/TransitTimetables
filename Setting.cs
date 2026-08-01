@@ -4,17 +4,24 @@ using Game.Settings;
 
 namespace TransitTimetables
 {
+    // NAME IS LOAD-BEARING, and it must stay UNIQUE across this author's mods. Setting.ApplyAndSave() calls
+    // AssetDatabase.SaveSpecificSetting(GetType().Name), which resolves the target settings asset by the CLASS SIMPLE
+    // NAME and stops at the FIRST match. While every mod called this class "Setting" a save from any one of them could
+    // land in another mod's file and skip its own (observed live: one session wrote only TransitTimetables.coc and left
+    // the other six byte-identical). Nothing persisted derives from this name — the on-disk identity is [FileLocation]
+    // below plus the name passed to LoadSettings — so renaming the class is safe, but renaming it back is not.
     [FileLocation(nameof(TransitTimetables))]
-    public class Setting : ModSetting
+    public class TransitTimetablesSetting : ModSetting
     {
         public const string Section = "Main";
         public const string GroupWindows = "Peak windows";
-        public const string GroupRealism = "Realistic travel time";
+        // GroupRealism ("Realistic travel time") is GONE: both settings that lived in it are gone too — the posted-time
+        // correction is unconditional now, and fleet sizing folded into the VehicleCounts dropdown.
         public const string GroupStops = "Stops";
         public const string GroupCompat = "Compatibility";
         public const string GroupGeneral = "General";
 
-        public Setting(IMod mod) : base(mod) { }
+        public TransitTimetablesSetting(IMod mod) : base(mod) { }
 
         // NOTE: initializers double as the settings-migration failsafe (missing keys in an old .coc keep these
         // values instead of defaulting to 0/false).
@@ -26,14 +33,35 @@ namespace TransitTimetables
         [SettingsUISection(Section, GroupGeneral)]
         public bool Enabled { get; set; } = true;
 
-        // ---- Vehicle-count management (opt-out for fleet-mod compatibility) ----
-        // ON (default): the mod sets each timetabled line's vehicle count (via its VehicleInterval modifier) to hold the
-        // chosen headway. OFF: the mod NEVER touches vehicle counts — it hands any line it was sizing back to vanilla /
-        // your other fleet mod ONCE and leaves it alone, so a dedicated fleet mod (e.g. All Transit + Truck) can own the
-        // counts without the two fighting over the same modifier every tick. The departure HOLD still works either way;
-        // with too few vehicles a line just runs wider than the set interval. (Also gates "Provision fleet".)
+        // ---- Vehicle-count management ----
+        // Who decides how many vehicles a timetabled line runs. This replaced the old "Manage vehicle count" on/off
+        // toggle AND absorbed "Provision fleet": sizing a line from the game's travel ESTIMATE while posting times
+        // measured from its REAL loop is incoherent — it advertises a schedule the line physically cannot keep — so
+        // "the mod decides" always means "sized for the measured loop", and there is no separate toggle for it.
+        //
+        // The departure HOLD is independent of all three values and always runs; with too few vehicles a line simply
+        // runs wider than its set interval.
         [SettingsUISection(Section, GroupGeneral)]
+        public VehicleCountMode VehicleCounts { get; set; } = VehicleCountMode.Unset;
+
+        // ---- Legacy settings, retained ONLY so their stored values can be migrated ----
+        // Do NOT delete these and do NOT change their type. The .coc is a DIFF against a default instance, so a value is
+        // only written when it differs from the default — which means a stored value is a deliberate choice worth
+        // preserving, and a deleted property drops it silently. Changing a shipped property's TYPE is worse than
+        // deleting it: Colossal.Json fails Enum.Parse on the old literal, logs a warning, and writes ordinal 0.
+        // [SettingsUIHidden] removes them from the Options page while Colossal.Json still serializes and decodes them.
+        // Read once by Migrate() and never again.
+        [SettingsUIHidden]
         public bool ManageVehicleCount { get; set; } = true;
+
+        [SettingsUIHidden]
+        public bool ProvisionRealFleet { get; set; } = false;
+
+        // Has the one-time "vehicle counts are changing" notice been answered? Global rather than per-city on purpose:
+        // the choice it offers IS global (it sets VehicleCounts), so asking again in the next city would only let a
+        // second answer silently overwrite the first. Not shown, and never written until the notice is answered.
+        [SettingsUIHidden]
+        public bool MigrationNoticeAnswered { get; set; } = false;
 
         // ---- Clean uninstall ----
         // One-shot button: wipe every trace of the mod from the CURRENT save — revert each line to vanilla (release held
@@ -80,31 +108,19 @@ namespace TransitTimetables
         [SettingsUISection(Section, GroupWindows)]
         public int NightEnd { get; set; } = 6; // 06:00 = vanilla's transport day start (RouteUtils.TRANSPORT_DAY_START_TIME 0.25f)
 
-        // Realistic travel time: CS2's own pathfinder estimate of how long a line takes systematically UNDERSHOOTS the
-        // real, simulated loop time (live-measured ~1.7x on sparse lines to ~2.5x on stop-dense ones — acceleration and
-        // braking at every stop that the free-flow estimate ignores). The mod measures each line's real loop live and
-        // corrects for it. Both toggles default OFF so existing timetables are unchanged until the player opts in; the
-        // correction is RT-invariant (frame-based), so it composes with the slow-time compatibility above.
+        // CS2's own pathfinder estimate of how long a line takes systematically UNDERSHOOTS the real, simulated loop
+        // (live-measured ~1.7x on sparse lines to ~2.5x on stop-dense ones — the acceleration and braking at every stop
+        // that a free-flow estimate ignores). The mod measures each line's real loop and corrects for it. The correction
+        // is RT-invariant (frame-based), so it composes with the slow-time compatibility below.
         //
-        // Master toggle — apply the correction to POSTED TIMES and stop holds so the board matches reality (no cost).
+        // There is NO LONGER a toggle for correcting POSTED TIMES: it is always on. The toggle ("Realistic travel time")
+        // asked the player whether they wanted the mod to tell the truth, which is not a real choice — it costs nothing,
+        // has no downside, and leaving it off built the whole timetable on a number the game itself is wrong about.
+        // It was only ever off by default because the correction was incoherent: offsets were picked PER STOP (measured
+        // where a stop had samples, raw estimate elsewhere), so one route interleaved two incompatible clocks. That is
+        // fixed — every offset now derives from the line's single measured loop via the ladder in HoldAllStops, and the
+        // dispatch publishes what it used so the board cannot disagree with the vehicles.
         //
-        // STAYS OFF BY DEFAULT. Flipping it on was prepared for v0.4.1 and deliberately reverted before release, for
-        // two reasons worth keeping written down. (1) Per-stop offsets are chosen PER STOP — measured once a stop has
-        // enough samples, else the raw estimate — so on a line whose real loop is ~3x the estimate the two interleave
-        // and the posted schedule is internally incoherent until every stop has warmed up, which is not guaranteed to
-        // happen (a hold at a near stop excludes that vehicle from measuring every stop downstream). (2) It is the only
-        // change of its kind not bounded by vanilla's own behaviour, and it would alter what the entire user base sees
-        // by default with no play-test behind it. Turn it on per-city instead; revisit the default once the
-        // measured/estimate mixing is fixed (that needs the dispatch to publish its offsets to the UI board).
-        [SettingsUISection(Section, GroupRealism)]
-        public bool RealisticTravelTime { get; set; } = false;
-
-        // Also size the FLEET to the real loop. This is the one that COSTS MONEY: holding a tight headway on a line whose
-        // real loop is ~2x the estimate needs ~2x the vehicles (and upkeep). OFF = keep the estimate-based count; ON =
-        // provision for the real loop (grow-only; never cuts a line below the estimate; capped).
-        [SettingsUISection(Section, GroupRealism)]
-        public bool ProvisionRealFleet { get; set; } = false;
-
         // Force buses to physically STOP even when nobody is boarding or alighting. Vanilla lets a bus SKIP an empty
         // stop — it only slows and rolls through, never pulling in — and a skipped stop is never held to its scheduled
         // time, so the bus runs ahead of its timetable. That is worst at the TERMINUS, which anchors the whole schedule,
@@ -165,9 +181,36 @@ namespace TransitTimetables
             return start < end ? (hour >= start && hour < end) : (hour >= start || hour < end);
         }
 
+        // True when the MOD is the one sizing lines. Note Unset resolves to false here, which is the safe direction:
+        // if the migration somehow has not run yet, we touch nothing rather than resizing a city on a default.
+        public bool ModSizesFleet => VehicleCounts == VehicleCountMode.ModDecides;
+
+        // Resolve the Unset sentinel exactly once, from the two legacy bools. Called from Mod.OnLoad immediately after
+        // LoadSettings — NOT from OnGameLoadingComplete, which also fires at boot for the main menu, where an enum whose
+        // current value matches no visible member would render the dropdown blank if the player opened Options first.
+        //
+        // Returns true when it changed something (the caller then flushes to disk).
+        //
+        // Only ManageVehicleCount is consulted. ProvisionRealFleet is deliberately NOT mapped to a mode: there is no
+        // mode meaning "manage counts but size them from the estimate", because that is the incoherent state this
+        // redesign exists to remove. A player who had it off is instead TOLD, once, by the migration notice.
+        public bool Migrate()
+        {
+            if (VehicleCounts != VehicleCountMode.Unset)
+                return false;
+            // A stored false is a deliberate opt-out (the default is true, and only non-default values are written),
+            // and it is the setting v0.3.5 shipped so a dedicated fleet mod could own the counts. Losing it would
+            // restart exactly the modifier war that release ended.
+            VehicleCounts = ManageVehicleCount ? VehicleCountMode.ModDecides : VehicleCountMode.HandsOff;
+            return true;
+        }
+
         public override void SetDefaults()
         {
+            // NOTE: the game never calls this for a ModSetting — the property initializers above are the real defaults.
+            // Kept correct anyway for the explicit "reset to defaults" path, but nothing may depend on it running.
             Enabled = true;
+            VehicleCounts = VehicleCountMode.Unset;
             ManageVehicleCount = true;
             MorningPeakStart = 6;
             MorningPeakEnd = 9;
@@ -175,12 +218,44 @@ namespace TransitTimetables
             EveningPeakEnd = 19;
             NightStart = 22;
             NightEnd = 6; // keep in lockstep with the initializer above (this runs on an explicit "reset to defaults")
-            RealisticTravelTime = false;
             ProvisionRealFleet = false;
             StopAtEveryStop = false;
             MaxDwellRoad = 3; // keep in lockstep with the initializers above (this runs on "reset to defaults")
             MaxDwellRail = 3;
             RealisticTripsCompat = false;
         }
+    }
+
+    // Who sizes a timetabled line's fleet. Backed by int (the default) — the settings widget casts to int, and an
+    // enum-typed property with no attribute already renders as a dropdown, so [SettingsUIDropdown] is not wanted here
+    // (it selects a different widget that demands a runtime item source).
+    // TWO STATES, deliberately. A third ("the mod sizes most lines but respects any line I set by hand") was designed
+    // and rejected: it makes one line silently behave differently from its nineteen neighbours with nothing on screen
+    // to say why, and it re-admits the incoherent case this redesign exists to remove — a hand-typed count that
+    // contradicts the line's own headway. The headway IS the cost lever. Want fewer vehicles? Widen the interval and
+    // the schedule stays true. A per-window count instead of an interval was also considered and dropped: an exact
+    // count below what the headway needs guarantees missed departures, and a count that steps down at a window
+    // boundary has nothing to damp it, so it would retire vehicles and rebuy them every single day.
+    public enum VehicleCountMode
+    {
+        // ORDINAL 0 IS LOAD-BEARING. Colossal.Json writes ordinal 0 whenever it cannot parse a stored enum literal, so
+        // anything that goes wrong degrades to "not decided yet" and re-runs the migration, rather than silently
+        // selecting a real mode. That also makes RENAMING a member above safe: an older stored literal simply fails to
+        // parse and re-migrates. [SettingsUIHidden] on the MEMBER keeps it out of the dropdown while leaving it a
+        // perfectly valid stored and decodable value. It is also never written to disk: the .coc is a diff against a
+        // default instance whose value is likewise Unset, so the scheme is self-clearing.
+        [SettingsUIHidden]
+        Unset = 0,
+
+        // The mod sizes every timetabled line for its MEASURED loop, to hold the headway you set — and it means EVERY
+        // line. Vanilla's "Assigned Vehicles" slider has no lasting effect on a timetabled line in this mode; the mod
+        // re-asserts its own count within a tick. That is intended: the mode says the mod decides.
+        ModDecides = 1,
+
+        // The mod never touches vehicle counts. Any line it was sizing is handed back ONCE and then left alone, so
+        // either you (via vanilla's slider) or a dedicated fleet mod (All Transit + Truck and friends) can own the
+        // counts without the two fighting over the same VehicleInterval modifier every tick. The departure HOLD still
+        // runs; a line with too few vehicles simply runs wider than its set interval.
+        HandsOff = 2,
     }
 }
