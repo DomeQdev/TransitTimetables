@@ -426,24 +426,17 @@ export const TransitPanelHost = () => {
         prevStopHas.current = stopHas;
     }, [stopHas]);
 
-    if (!open) {
-        // Closed but a stop is still selected: keep a slim reopen bar. Re-clicking the SAME stop can't reopen the
-        // panel (the game fires no reselect event for an already-selected entity), so offer this affordance instead.
-        if (!stopHas) return null;
-        return (
-            <div
-                onClick={() => setOpen(true)}
-                style={{
-                    position: "fixed", top: "90rem", right: "56rem", zIndex: 99999, pointerEvents: "auto",
-                    cursor: "pointer", background: "rgba(13, 21, 33, 0.97)", borderRadius: "6rem",
-                    padding: "8rem 12rem", color: "white", fontSize: "var(--fontSizeM)", fontWeight: "bold",
-                    textTransform: "uppercase", boxShadow: "0 4rem 24rem rgba(0,0,0,0.5)",
-                } as any}
-            >
-                {t("panelTitle", "DEPARTURES")} ▸
-            </div>
-        );
-    }
+    // X MEANS CLOSED — render nothing at all.
+    //
+    // This used to fall back to a slim "DEPARTURES ▸" bar at the panel's own position whenever a stop was still
+    // selected, so pressing X visibly shrank the panel instead of dismissing it and the corner never went empty.
+    // It existed for a real reason: re-clicking an ALREADY-SELECTED stop fires no event, so the C# autoOpen counter
+    // never increments and the selection alone cannot bring the panel back.
+    //
+    // That reason is already covered. TransitButton is appended to GameTopRight (index.tsx), is always mounted, and
+    // its onSelect toggles this same module-level _open — so the toolbar icon reopens the panel for the currently
+    // selected stop, which is exactly what the bar was standing in for. Nothing is stranded by closing here.
+    if (!open) return null;
     return (
         <div
             style={{
