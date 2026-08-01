@@ -141,6 +141,34 @@ namespace TransitTimetables
         // stretched, so 2048 frames — the original value — would have been only a few in-game minutes and too short to
         // outlast the measurement cadence it is meant to smooth.
         private const float kShrinkHoldMinutes = 20f;
+        // STAGGERED FLEET CHANGES: per LINE, the sim FRAME of the last accepted one-vehicle ramp step.
+        //
+        // Vanilla does not store a vehicle count. TransportLineSystem re-derives it every 256 frames from the line's
+        // VehicleInterval — count = round(stableDuration / interval) (TransportLineSystem.CalculateVehicleCount) — and
+        // this mod steers exactly that number by writing the line's VehicleInterval RouteModifier
+        // (HourlyFleetSystem.TrySetLineFleet). So the instant our derived count moves 10 -> 19, vanilla wants nine more
+        // buses AT ONCE.
+        //
+        // It does not spawn them in one frame: transportLine.m_VehicleRequest is a SINGLE entity field, and
+        // RequestNewVehicleIfNeeded only creates the next request once the previous one has been dispatched and moved
+        // into the DispatchedRequest buffer (TransportLineSystem.CheckRequests). But that loop turns over once per
+        // 256-frame tick, which is far shorter than any real headway — so the depot empties nine buses back-to-back and
+        // they enter the line as ONE CLUMP. That is precisely the bunching this mod exists to remove, created by the mod
+        // itself, and the departure holds then have to spend laps unwinding it.
+        //
+        // So: move the count ONE VEHICLE PER DEPARTURE INTERVAL. Vanilla's own one-request-at-a-time path then spaces
+        // the arrivals for free — no depot control, no new component written, nothing added to the save. The rate is
+        // not a throttle for its own sake: a line can only absorb one extra vehicle per headway without bunching, so
+        // this IS the maximum useful rate. (As the count climbs the headway shrinks, so the ramp accelerates itself.)
+        //
+        // Symmetric on the way down, and that half matters as much: AbandonVehicles culls (continuing - target) in a
+        // single pass, odometer-sorted, so a decisive drop mass-retires buses — the retirement half of the odometer
+        // yo-yo. Stepping down one at a time turns that into an orderly retirement the drain can reason about.
+        //
+        // Deliberately does NOT apply to a line with no applied count yet (no m_LastFleet entry): that is INITIAL
+        // provisioning, where there is no established service to bunch against and ramping would instead leave a new
+        // line running one bus for many headways. First sizing lands whole; only subsequent CHANGES are staggered.
+        private readonly Dictionary<Entity, uint> m_RampSince = new Dictionary<Entity, uint>();
         // MISSED-TRIP CATCH-UP: per LINE, the sim FRAME of the most recent scheduled slot a bus was assigned/dispatched
         // on ("claimed"). When a bus reaches the terminus and a scheduled slot has since passed UNCOVERED (its frame is
         // newer than this) it is dispatched IMMEDIATELY to fill the gap instead of idling to the next slot — provided
@@ -461,6 +489,8 @@ namespace TransitTimetables
                     m_DurStable.Remove(line);
                     m_LastSlotFrame.Remove(line);
                     m_ShrinkSince.Remove(line);
+                    m_RampSince.Remove(line);     // no applied count to ramp from; a stale timer would stall the
+                                                  // first step by up to one headway when the line is re-enabled
                     continue;
                 }
                 anyEnabled = true;
@@ -527,6 +557,8 @@ namespace TransitTimetables
                 // line is edited or its route recreated — so a periodic re-write keeps our derived count in place.
                 // TrySetLineFleet only touches the buffer when the value actually differs, so this is cheap.
                 int desiredFleet = 0;
+                int rampTarget = 0;   // diagnostics only: while a staggered change is in flight, the FINAL count the
+                                      // one-per-headway walk is heading for (desiredFleet holds the current step)
                 float durUnits = m_Fleet.LineStableDurationUnits(line);
                 // "Another mod decides" (compat with dedicated fleet mods that write the same per-line VehicleInterval
                 // modifier — e.g. All Transit + Truck): we never size the fleet; a line we WERE sizing is handed back
@@ -550,6 +582,7 @@ namespace TransitTimetables
                         m_LastFleet.Remove(line);
                     }
                     m_ShrinkSince.Remove(line); // no applied count to hysterese against; for symmetry with m_LastFleet
+                    m_RampSince.Remove(line);   // ditto: nothing to ramp when the player owns the vehicle counts
                     m_PostedFleet.Remove(line); // and no opinion to publish — the panel falls back to the estimate
                 }
                 else if (durUnits > 1f)
@@ -607,6 +640,34 @@ namespace TransitTimetables
                             }
                         }
                         else m_ShrinkSince.Remove(line);                        // at or above target: no pending shrink
+                        // STAGGERED FLEET CHANGES (see m_RampSince for the full reasoning): walk the applied count
+                        // toward the target ONE VEHICLE PER DEPARTURE INTERVAL instead of stepping it, so vanilla's
+                        // one-request-per-tick depot path spaces the arrivals instead of emptying the depot in a clump.
+                        // Runs AFTER the cap and the shrink hysteresis: those decide WHETHER the count should move and
+                        // to what; this only paces HOW FAST it gets there. A line with no applied count yet is skipped
+                        // entirely (initial provisioning lands whole).
+                        bool rampStepped = false;
+                        if (m_LastFleet.TryGetValue(line, out int rampFrom) && desiredFleet != rampFrom)
+                        {
+                            rampTarget = desiredFleet;   // remember where we are heading before taking one step
+                            // The gate is the line's CURRENT headway. interval is in minutes; m_Fpm converts to frames,
+                            // so this stays correct under a slow-time mod exactly as kShrinkHoldMinutes does. Floor at
+                            // one frame so a degenerate zero interval can never divide the ramp by zero or stall it.
+                            uint stepFrames = (uint)System.Math.Max(1f, interval * m_Fpm);
+                            if (!m_RampSince.TryGetValue(line, out uint lastStep) || frame - lastStep >= stepFrames)
+                            {
+                                // Take one step toward the target. m_RampSince is advanced ONLY if the write below
+                                // actually lands — if the stability gate or TrySetLineFleet rejects it, vanilla never
+                                // saw this step, so it must not consume the interval budget.
+                                desiredFleet = rampFrom + (desiredFleet > rampFrom ? 1 : -1);
+                                rampStepped = true;
+                            }
+                            else
+                            {
+                                desiredFleet = rampFrom;   // between steps: hold the count vanilla is already acting on
+                            }
+                        }
+                        else m_RampSince.Remove(line);     // at target (or never sized): no ramp in progress
                         // CRITICAL: desiredFleet must be computed on EVERY tick, NOT only when the stability gate passes.
                         // The drain below derives `surplus` from it, and when desiredFleet is 0 surplus is forced to 0,
                         // which SKIPS THE WHOLE DRAIN BLOCK — including the branch that strips vanilla's AbandonRoute off
@@ -626,7 +687,13 @@ namespace TransitTimetables
                         // neighbours with nothing on screen to explain why. Owning the counts means picking
                         // "Do not let the mod decide", which hands every line back.
                         if (!NoticeAwaitingAnswer && stable >= kDurStableTicks && m_Fleet.TrySetLineFleet(line, desiredFleet))
+                        {
                             m_LastFleet[line] = desiredFleet;
+                            // Only now has vanilla actually seen this step, so only now does it start the next
+                            // interval's clock. Advancing it at the decision point instead would let a suppressed
+                            // write burn the budget and stall the ramp a full headway per blocked tick.
+                            if (rampStepped) m_RampSince[line] = frame;
+                        }
                         else if (m_LastFleet.TryGetValue(line, out int heldFleet))
                             // The write was suppressed (estimate still settling) but the line already carries a count we
                             // wrote earlier. The drain MUST reason about the number vanilla is actually acting on, not the
@@ -765,8 +832,11 @@ namespace TransitTimetables
 
                     int surplus = desiredFleet > 0 ? liveCount - desiredFleet : 0;
 
+                    // ramp=- when the count is settled, ramp=<n> while a staggered change is in flight (n = the final
+                    // target the one-per-headway walk is heading for, target= being the step it is on right now). Lets
+                    // a live log tell "the mod wants 19 and is walking there" from "the mod thinks this line needs 11".
                     if (diagLog)
-                        Mod.log.Info($"[SelfTest] fleet line#{line.Index} now={nowMin}m live={liveCount} target={desiredFleet} surplus={surplus} slotCovered={slotCovered} pending={pending.Count} forced={forcedStops}");
+                        Mod.log.Info($"[SelfTest] fleet line#{line.Index} now={nowMin}m live={liveCount} target={desiredFleet} ramp={(rampTarget != 0 ? rampTarget.ToString() : "-")} surplus={surplus} slotCovered={slotCovered} pending={pending.Count} forced={forcedStops}");
 
                     // Stale-latch repair. `pending` used to be cleared ONLY when surplus hit 0, so buses latched while the
                     // surplus was larger stayed latched after it shrank — observed live as pending=8 against surplus=4 —
@@ -902,6 +972,7 @@ namespace TransitTimetables
             PruneToLive(m_DurStable, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_LastSlotFrame, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_ShrinkSince, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_RampSince, m_LiveScratch, m_StaleScratch);
             // Drop per-vehicle slots for buses that despawned/retired (m_LiveVehScratch = every live vehicle this tick).
             PruneToLive(m_RunSlotFrame, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_ArrivedFrame, m_LiveVehScratch, m_StaleScratch);
@@ -1564,7 +1635,7 @@ namespace TransitTimetables
             // Forget ALL in-memory tracking so nothing re-applies to the now-vanilla lines.
             m_LastFleet.Clear(); m_PendingRetire.Clear(); m_LapServed.Clear(); m_LapFront.Clear();
             m_LineLoopEma.Clear(); m_LineLoopSamples.Clear(); m_LineLoopMin.Clear(); m_LineRejectStreak.Clear();
-            m_LastDur.Clear(); m_DurStable.Clear(); m_LastSlotFrame.Clear(); m_ShrinkSince.Clear();
+            m_LastDur.Clear(); m_DurStable.Clear(); m_LastSlotFrame.Clear(); m_ShrinkSince.Clear(); m_RampSince.Clear();
             m_RunSlotFrame.Clear(); m_ArrivedFrame.Clear(); m_VehTerminusDepart.Clear(); m_Committed.Clear();
             m_VehStopHold.Clear(); m_VehHoldFrames.Clear(); m_PostedOffset.Clear(); m_PostedFleet.Clear();
             Mod.log.Info($"[SelfTest] clean uninstall: reverted {n} line(s) to vanilla and removed all mod components. " +
