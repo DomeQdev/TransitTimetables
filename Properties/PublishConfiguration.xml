@@ -9,28 +9,40 @@
 	<LongDescription>
 Turn any public-transport line into a scheduled service. Works for every passenger type: buses, trams, trains, metros, ferries and aircraft.
 
+WHAT'S NEW IN 0.5.1:
+
+- Your settings are saved properly now. All of my mods shared one internal name for their settings, and the game resolves them by that name, so all but one wrote nowhere and anything you changed came back as default the next session.
+- Vehicle counts are now a single setting with two states: the mod sizes your fleets, or you do.
+- Realistic travel time is no longer optional. It is always on, it costs nothing, and it is the point of the mod.
+- Fleet growth is staggered. Extra vehicles used to leave the depot together and enter the line as one clump, which is the bunching this mod exists to prevent. They now arrive one per departure interval.
+- Vehicles no longer throw off passengers who are already boarding, and "Maximum stop time" caps how long they will wait for them.
+- Missed departures are caught up, measured travel times survive quitting, and there is a one-click clean uninstall.
+
+Full detail in the changelog.
+
 Per line you opt in and set:
 
 - a first departure time and peak / off-peak / night intervals (the global peak windows are configurable),
 - OR give a line its OWN peak hours: any line can override the global rush with two custom windows and its own peak interval, so a line serving a factory shift, a school run or a stadium can run its own rush hour while the rest of the network keeps to the city-wide one,
-- the mod then DERIVES how many vehicles the line needs to hold that headway, and raises the game's vehicle-count ceiling so the derived fleet is never clamped,
+- the mod then DERIVES how many vehicles the line needs to hold that headway and sizes the line to it, without touching the vehicle-count slider on any other line,
 - a terminus stop (timing point) where early vehicles are held to the scheduled departure, and where surplus vehicles retire — after finishing their loop and dropping passengers, not mid-route.
 
 Select any stop to open a printed-timetable departure board for every line that serves it, listed from the first departure of the day. Day-only and night-only lines only show and run the intervals that apply to them, and a night line is scheduled inside the night window.
 
 No timetable set = the line runs exactly like vanilla. Everything is controlled from the line's own info panel plus a floating departures board.
 
+Posted times come from each line's REAL measured loop, not the game's estimate. The game's estimate is optimistic — it ignores the time vehicles lose braking, accelerating and loading passengers at every stop, and real loops measure up to 3x it — so times based on it drift ahead of reality. The mod measures each line as it runs and saves the result with your city, so posted times are right from the moment you load rather than after a day or two of learning. This used to be an optional setting; it is now simply how the mod works.
+
 SETTINGS (a plain timetable needs none of them):
 
-- "Realistic travel time" (free, off by default): the game's own loop estimate is optimistic (it ignores the time vehicles lose braking, accelerating and loading passengers at every stop — real loops measure up to 3x it), so posted times drift ahead of reality. Turn this on and the mod measures each line's REAL loop as it runs and posts realistic stop times, so early vehicles wait at each stop until their true departure. Measurements are saved with your city, so they survive quitting instead of re-learning every session. Recommended, and it costs nothing.
-- "Provision fleet for real travel time" (increases number of vehicles, off by default): also sizes each line's vehicle count to its real loop. A line whose real loop is ~2x the estimate needs about twice the vehicles to hold the same headway. Grow-only and capped.
+- "Vehicle counts": either the mod sizes each line's fleet to hold the headway you set, or you keep control. Because it sizes to the REAL measured loop, a stop-dense line needs roughly twice the vehicles the game's own estimate would suggest, so expect more vehicles than vanilla runs. Switch it to "I manage them" to hand every count back, whether you prefer the game's "Assigned Vehicles" slider or a dedicated fleet mod.
 - "Stop at every stop (even empty ones)" (free, off by default): by default a bus skips a stop where nobody boards or alights, so that stop isn't held to schedule; the terminus is now always honoured, and this extends that to every stop. Lines run a little slower.
 - "Maximum stop time" for buses and for rail (3 minutes each by default): how long a vehicle may keep waiting PAST its posted departure for passengers who are already boarding. It is a limit, not a target — a vehicle with nobody boarding still leaves exactly on its posted minute, and this setting never delays it by a second. Raise the rail value if you see people piling up on a busy platform: a train or metro exchanging a full platform takes far longer to load, and unlike a bus it can never skip a stop. Set it to 0 to leave on the dot and wait for nobody.
 - "Realistic Trips / slow-time compatibility" (ALPHA, off by default): keeps timing correct if you run a mod that lengthens the in-game day (Time2Work / Realistic Trips). Leave off otherwise.
 
 CLEAN UNINSTALL: Options has a "Remove all mod data from this save" button. It reverts every line to the base game and deletes the mod's data from your city, so you can uninstall with nothing left behind. It clears your timetables, so it asks first — and after confirming, let the game run for a moment before you save.
 
-Recommended: for accurate timetables at no cost, turn on "Realistic travel time" and leave the rest at their defaults; add "Provision fleet" only if you want the mod to also buy the vehicles that headway really needs, and raise "Maximum stop time" if you see passengers piling up on a busy platform.
+Recommended: leave everything at its defaults. Raise "Maximum stop time" for rail if you see passengers piling up on a busy platform, and switch "Vehicle counts" to "I manage them" if you would rather own your fleet sizes yourself.
 
 KNOWN ISSUES:
 
@@ -63,7 +75,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-transittimetables-adjust-departure-times-and-frequencies-in-all-types-of-transit-systems.1936039/" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.4.2" />
+	<ModVersion Value="0.5.1" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -72,35 +84,47 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
+v0.5.1 [BETA] — Vehicle counts become one setting, fleet growth is staggered, and your settings actually save
+
+This is the first build to carry all of the 0.4.x and 0.5.0 work together. Earlier 0.4.0 and 0.5.0 uploads went out without their changelogs, so their fixes are listed here.
+
+Still BETA: reviewed closely, but not played through a long test. Please report anything odd on GitHub. You can step back without uninstalling: set "Maximum stop time" to 0 for the old departure behaviour, hand vehicle counts back to yourself, or pause everything with the master switch.
+
+- FIX: your settings were never being saved. All of my mods shared one internal name for their settings, and the game resolves them by that name, so all but one wrote nowhere and anything you changed came back as default the next session. Fixed across every mod.
+
+- CHANGE: "Realistic travel time" is no longer a setting. It is always on. It cost nothing, it was off by default, and it is the entire point of the mod.
+
+- CHANGE: the three vehicle-count settings are now one, with two states: the mod sizes your fleets, or you do. A one-time notice explains it on first load.
+
+- NEW: fleet growth is staggered. When a line needed more vehicles the depot released them together, putting nine buses on the road as one clump, which is the bunching this mod exists to prevent. They now arrive one per departure interval.
+
+- FIX: switching the mod or a timetable off now undoes only what the mod itself did. A count you set by hand with "Assigned Vehicles" survives.
+
+- FIX: vehicles were throwing off passengers who were already boarding. The base game counts someone as a passenger the moment they START WALKING to the vehicle, so an on-time departure cancelled everyone still crossing the platform. Reported as "the bus fills up, then empties down to a certain amount, then leaves".
+
+- CHANGE: "Minimum stop time" is now "Maximum stop time" and works the other way round. It caps how long a vehicle may keep waiting PAST its posted departure for people already boarding. It is a limit, not a target: a vehicle with nobody boarding still leaves exactly on its posted minute. 3 minutes by default, 0 to wait for nobody. Raise the rail value if passengers pile up on a busy platform.
+
+- NEW: missed trips are caught up. If a scheduled departure passes with no vehicle at the terminus, the next arrival covers the gap instead of cancelling the trip.
+
+- NEW: measured travel times are saved with your city, so posted times are right from the moment you load instead of relearning every session.
+
+- NEW: "Remove all mod data from this save" in Options, for a clean uninstall with nothing left behind.
+
+- FIX: vehicles could disappear mid-route instead of finishing their loop, and lines could shed vehicles below their target.
+
+- FIX: posted stop times could run backwards along a route while some stops had measured times and others were still estimating.
+
+- FIX: pressing X on the departures board now closes it, instead of shrinking it to a small bar.
+
+- The last English-only text is now localized, and the departures board no longer recalculates itself every frame.
+
 v0.4.2 [BETA] — Steadier vehicle counts, and a retirement fix
 
-Still BETA: reviewed line by line, but not played through a long test. Please report anything odd on GitHub. You can step back without uninstalling — "Maximum stop time" to 0 restores the old departure behaviour, "Manage vehicle count" off hands vehicle counts back to you, and the master switch pauses the whole mod.
+- FIX: the vehicle count no longer flips back and forth by one. If a line's round trip sits close to a whole multiple of its interval — say a 28-to-32 minute loop on a 30 minute schedule — the calculated count could flap between one value and the next as traffic varied, buying and retiring a vehicle each time and leaving a gap in service. A reduction of ONE vehicle now has to hold steadily for about 20 minutes before it is acted on. A bigger change still applies immediately, and ADDING vehicles is never delayed. (Reported by a community member — thank you.)
 
-- FIX: the vehicle count no longer flips back and forth by one. If a line's round trip sits close to a whole multiple of its interval — say a 28-to-32 minute loop on a 30 minute schedule — the calculated count could flap between one value and the next as traffic varied, buying and retiring a vehicle each time and leaving a gap in service. A reduction of ONE vehicle now has to hold steadily for about 20 minutes before it is acted on. A bigger change still applies immediately (that is a peak/off-peak boundary or an edited route, not traffic noise), and ADDING vehicles is never delayed. Two things to expect: the panel shows the newly calculated number straight away while the running count catches up, so after editing an interval you may see them disagree for a while; and on a line that keeps flipping, the extra vehicle is kept on purpose rather than bought and sold twice an hour. (Reported by a community member — thank you.)
+- FIX: a vehicle could retire at the terminus with nothing of its own line there to take the next departure, on a line whose vehicle count had gone up and then down again. The mod deliberately remembers a retirement decision so a brief moment with no vehicle at the terminus does not cancel it, but that memory was never cleared when the count went UP and the retirement was called off, so it could be reused later to skip the "is this departure covered?" check.
 
-- FIX: a vehicle could retire at the terminus with nothing of its own line there to take the next departure, on a line whose vehicle count had gone up and then down again. The mod deliberately remembers a retirement decision so that a brief moment with no vehicle at the terminus does not cancel it — but that memory was never cleared when the count went UP and the retirement was called off, so it could be reused later to skip the "is this departure covered?" check. Found while researching a feature request rather than reported, and it had been accumulating quietly.
-
-v0.4.1 [BETA] — Vehicles no longer leave passengers behind at the door
-
-- FIX: vehicles were throwing off passengers who were already boarding. Reported as "the bus fills up, then empties down to a certain amount, then leaves", with the queue growing at busy stations. Cause: the base game counts someone as a passenger the moment they START WALKING to the vehicle, so the mod's on-time departure was cancelling everyone still crossing the platform and putting them back in the queue. It happened on every departure of every timetabled vehicle. (Reported by a community member — thank you.)
-
-- CHANGE: "Minimum stop time" is now "Maximum stop time", and it works the other way round. Instead of padding every stop, it now caps how long a vehicle may keep waiting PAST its posted departure for people who are already boarding. It is a limit, not a target: a vehicle with nobody boarding still leaves exactly on its posted minute and this setting never delays it. Both default to 3 minutes. Set it to 0 for the old "leave on the dot, wait for nobody" behaviour. Under the bonnet this now uses the game's own boarding logic rather than overriding it, so waiting, boarding order and the widening pick-up radius are all stock behaviour — the mod only decides when the game gives up.
-
-- FIX: posted stop times could run backwards along a route (a later stop showing an earlier time) while some stops had measured times and others were still using the estimate. Times are now always non-decreasing around the loop.
-
-v0.4.0 [BETA] — Missed trips, saved travel times and a clean uninstall
-
-- NEW: missed trips are caught up. If a scheduled departure passes with no vehicle at the terminus, the next one to arrive now covers the gap instead of cancelling the trip and waiting for its own next slot, which used to leave vehicles parked at the terminus while the line ran empty. Guarded so it cannot bunch with the following departure.
-- NEW: measured travel times are saved with your city, so they survive quitting instead of being re-learned from scratch every session. Posted stop times are therefore right from the moment you load rather than after a day or two of measuring.
-- NEW: "Remove all mod data from this save" button (Options > General) for a clean uninstall with nothing left behind.
-- FIX: a vehicle could retire at a stop SHARED with another line while nothing of its own line was there to take the next departure.
-- FIX: vehicles could disappear mid-route instead of finishing their loop, because the mod stopped protecting them whenever a line was already at its target count.
-- FIX: lines could shed vehicles below their target; the retirement list is now rebuilt as the target changes.
-- FIX: assorted fleet issues — the mod and the game could disagree about a line's target count after loading, the per-line vehicle cap now applies on every path, and a diagnostic message no longer repeats every few frames.
-
-v0.3.5 — Optional "Manage vehicle count" toggle, so a dedicated fleet mod can own vehicle counts instead.
-
-</ChangeLog>
+	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
 	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />
 	<!--Supported values Public, Private, Unlisted-->
