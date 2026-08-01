@@ -176,6 +176,7 @@ namespace TransitTimetables
             if (!had)
                 EntityManager.AddComponent<TimetableSchedule>(sel);
             EntityManager.SetComponentData(sel, sch);
+            m_UiDirty = true;   // the player just edited: recompute now, don't wait for the minute to tick
         }
 
         private delegate void RefCustomPeakAction<T>(ref CustomPeakSchedule c, T value);
@@ -192,6 +193,7 @@ namespace TransitTimetables
             if (!had)
                 EntityManager.AddComponent<CustomPeakSchedule>(sel);
             EntityManager.SetComponentData(sel, c);
+            m_UiDirty = true;   // ditto
         }
 
         // Make board rows their line's terminus. onlyLine == Entity.Null → every line on the board (each to the platform
@@ -218,6 +220,7 @@ namespace TransitTimetables
         // Point a timetabled line's terminus at a stop it serves. No-op if the line has no timetable or already points there.
         private void SetLineTerminus(Entity line, Entity stop)
         {
+            m_UiDirty = true;   // terminus moved: the board's offsets and the star change immediately
             if (line == Entity.Null || stop == Entity.Null || !EntityManager.HasComponent<TimetableSchedule>(line))
                 return;
             TimetableSchedule sch = EntityManager.GetComponentData<TimetableSchedule>(line);
@@ -259,10 +262,32 @@ namespace TransitTimetables
         private static string Hr(int h) => (h < 10 ? "0" : "") + h;
         private static string Range(int a, int b) => Hr(a) + "-" + Hr(b);
 
+        // Recompute gate. THIS PHASE IGNORES GetUpdateInterval: only GameSimulation / EditorSimulation /
+        // LoadSimulation call the interval-aware UpdateSystem.Update overload, so a UIUpdate system runs on EVERY
+        // RENDERED FRAME no matter what interval it declares. Refresh() is not cheap — it walks the route waypoints,
+        // rebuilds the departure board JSON and re-derives every panel value — and it was running ~60x a second.
+        //
+        // Nothing it produces changes faster than the in-game MINUTE (departure times, the active interval, the
+        // window labels) except things the player just did, which set m_UiDirty. So recompute on: a selection
+        // change, a minute boundary, or an explicit edit. That is roughly one refresh per 182 frames instead of
+        // every frame, and the visible behaviour is identical because the bindings already suppressed the
+        // unchanged writes — we were paying to compute values that were then thrown away.
+        private int m_LastRefreshMinute = -1;
+        private Entity m_LastRefreshSel = Entity.Null;
+        private bool m_UiDirty = true;
+
         protected override void OnUpdate()
         {
             base.OnUpdate();
-            Refresh();
+            Entity sel = m_ToolSystem != null ? m_ToolSystem.selected : Entity.Null;
+            int nowMin = (int)(m_TimeSystem.normalizedTime * 1440f) % 1440;
+            if (m_UiDirty || sel != m_LastRefreshSel || nowMin != m_LastRefreshMinute)
+            {
+                m_UiDirty = false;
+                m_LastRefreshSel = sel;
+                m_LastRefreshMinute = nowMin;
+                Refresh();
+            }
             m_SelHasB.Update();
             m_SelTtEnabledB.Update();
             m_SelTtFirstB.Update();
