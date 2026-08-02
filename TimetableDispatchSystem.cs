@@ -229,6 +229,21 @@ namespace TransitTimetables
         private readonly Dictionary<Entity, Entity> m_LapFront = new Dictionary<Entity, Entity>();        // line -> vehicle at its terminus now
         private readonly Dictionary<Entity, uint>   m_VehTerminusDepart = new Dictionary<Entity, uint>(); // vehicle -> frame it last left the terminus
         private readonly Dictionary<Entity, float>  m_LineLoopEma = new Dictionary<Entity, float>();      // line -> EMA of measured loop frames
+        // ROLLING WINDOW of recent accepted laps, and its MEDIAN. The median is what the correction uses once a line
+        // has enough laps, because the three candidate estimators fail in different directions:
+        //   mean/EMA  every double drags it up permanently - this is what read 2.9x and asked for 117 vehicles
+        //   minimum   one unusually FAST lap redefines the line, then ordinary laps look like doubles and the
+        //             re-anchor path fires. Observed live on line#1349029: the correction jumped 1.79 -> 2.68 and
+        //             discarded 68 samples in one step.
+        //   median    a double must become the MAJORITY before it moves the answer
+        // Measured contamination in a live city: ema/anchor ran 1.07x on the cleanest line and 1.47x on the worst, so
+        // doubles are a minority everywhere observed - exactly the regime a median handles.
+        // KNOWN LIMIT: if a line is so busy that OVER HALF its readings are doubles, the median is captured too. The
+        // anchor is still tracked for precisely that reason - median ~= 2x anchor is the tell.
+        private readonly Dictionary<Entity, List<float>> m_LineLoopWindow = new Dictionary<Entity, List<float>>();
+        private readonly Dictionary<Entity, float>  m_LineLoopMedian = new Dictionary<Entity, float>();
+        private const int kLoopWindow      = 32;   // laps retained per line
+        private const int kMedianMinSample = 10;   // below this a median is no better than the anchor - see LineCorrection
         private readonly Dictionary<Entity, int>    m_LineLoopSamples = new Dictionary<Entity, int>();    // line -> loop samples so far
         private readonly Dictionary<Entity, float>  m_LineLoopMin = new Dictionary<Entity, float>();      // line -> running MIN loop (the true single loop; doubles sit above it)
         private readonly Dictionary<Entity, int>    m_LineRejectStreak = new Dictionary<Entity, int>();   // line -> consecutive gate rejects (drives the stale-anchor reset)
@@ -484,6 +499,8 @@ namespace TransitTimetables
                     // changed while disabled, the stale value self-heals via the existing reject/re-anchor path.
                     m_LapFront.Remove(line);
                     m_LineLoopEma.Remove(line);
+                    m_LineLoopWindow.Remove(line);
+                    m_LineLoopMedian.Remove(line);
                     m_LineLoopSamples.Remove(line);
                     m_LineLoopMin.Remove(line);
                     m_LineRejectStreak.Remove(line);
@@ -741,8 +758,35 @@ namespace TransitTimetables
                     float measMin = m_LineLoopEma[line] / m_Fpm;
                     float estMin  = durUnits * m_Um;
                     float ratio   = estMin > 0.01f ? measMin / estMin : 0f;
-                    Mod.log.Info($"[SelfTest] laptime line#{line.Index} estDur={estMin:F1}m measLoop={measMin:F1}m " +
-                                 $"ratio={ratio:F2} n={loopN} compat={(s.RealisticTripsCompat ? 1 : 0)}");
+                    // ALSO report the running MIN anchor and its ratio. AcceptLoopSample's whole rationale is that a
+                    // missed terminus pass makes a span a MULTIPLE of the truth, so "the TRUE single loop is the
+                    // MINIMUM of the spans" — yet LineCorrection consumes the EMA, which is an average over samples
+                    // accepted anywhere in [min, 1.6*min] and therefore sits ABOVE that stated truth.
+                    //
+                    // Reading the two ratios apart is what tells the two failure modes from each other:
+                    //   minRatio ~= ratio      -> the EMA is faithful; the anchor itself is what is high, i.e. the
+                    //                            line is so busy that a clean single lap is never observed and the
+                    //                            min has settled on a double (this line: 117 vehicles, 2-min headway,
+                    //                            50 stops — the terminus boarding slot is essentially never free).
+                    //   minRatio << ratio      -> the anchor found the truth but the EMA is inflated by the 1.6x
+                    //                            acceptance band, and the correction should be reading the min.
+                    // rej = consecutive rejections, so a high value means the anchor is being defended against
+                    // samples it considers doubles — useful for telling "stable" from "constantly re-anchoring".
+                    float anchorMin = m_LineLoopMin.TryGetValue(line, out float lm) ? lm / m_Fpm : 0f;
+                    float minRatio  = estMin > 0.01f && anchorMin > 0f ? anchorMin / estMin : 0f;
+                    int   rej       = m_LineRejectStreak.TryGetValue(line, out int rr) ? rr : 0;
+                    // anchor/minRatio is what LineCorrection now USES; ema/ratio is retained for comparison only.
+                    // A large gap between them means this line is accumulating double-counted laps.
+                    // All three estimators are reported side by side, with `used` naming the one actually driving the
+                    // correction. medRatio ~= 2 x minRatio is the tell that over half this line's laps are doubles and
+                    // the median has been captured — the one case where the anchor would have been the better value.
+                    float medMin   = m_LineLoopMedian.TryGetValue(line, out float mdf) ? mdf / m_Fpm : 0f;
+                    float medRatio = estMin > 0.01f && medMin > 0f ? medMin / estMin : 0f;
+                    Mod.log.Info($"[SelfTest] laptime line#{line.Index} estDur={estMin:F1}m " +
+                                 $"anchor={anchorMin:F1}m minRatio={minRatio:F2} | median={medMin:F1}m medRatio={medRatio:F2} " +
+                                 $"| ema={measMin:F1}m emaRatio={ratio:F2} " +
+                                 $"used={(loopN >= kMedianMinSample && medMin > 0f ? "median" : loopN >= kMinTrustSamples ? "anchor" : "prior")} " +
+                                 $"rej={rej} stops={CountStops(line)} n={loopN} compat={(s.RealisticTripsCompat ? 1 : 0)}");
                 }
 
                 HoldAllStops(line, s, sch, customSch, sched, terminusStop, terminusWaypoint, frame, nowMin, curInterval, diagLog);
@@ -982,6 +1026,8 @@ namespace TransitTimetables
             PruneToLive(m_LapServed, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_LapFront, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_LineLoopEma, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_LineLoopWindow, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_LineLoopMedian, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_LineLoopSamples, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_LineLoopMin, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_LineRejectStreak, m_LiveScratch, m_StaleScratch);
@@ -1600,6 +1646,10 @@ namespace TransitTimetables
             m_LineLoopEma[line] = c.m_LoopEmaFrames;
             m_LineLoopMin[line] = c.m_LoopMinFrames > 0f ? c.m_LoopMinFrames : c.m_LoopEmaFrames;
             m_LineLoopSamples[line] = c.m_LoopSamples;
+            // The WINDOW is not persisted (32 floats per line is not worth the save space), only its median. So a
+            // reloaded line keeps using the stored median until it re-earns kMedianMinSample fresh laps, instead of
+            // dropping to the lower anchor and churning every fleet down and back up on every single load.
+            if (c.m_LoopMedianFrames > 0f) m_LineLoopMedian[line] = c.m_LoopMedianFrames;
         }
 
         // Write the current in-memory measurement back into the line's LineMeasuredTravel component so it survives
@@ -1612,10 +1662,13 @@ namespace TransitTimetables
             if (!m_LineLoopSamples.TryGetValue(line, out int samples) || samples <= 0) return;
             float ema = m_LineLoopEma.TryGetValue(line, out float e) ? e : 0f;
             float min = m_LineLoopMin.TryGetValue(line, out float m) ? m : 0f;
+            float med = m_LineLoopMedian.TryGetValue(line, out float md) ? md : 0f;
             ushort s = samples > ushort.MaxValue ? ushort.MaxValue : (ushort)samples;
             LineMeasuredTravel cur = EntityManager.GetComponentData<LineMeasuredTravel>(line);
-            if (cur.m_LoopEmaFrames == ema && cur.m_LoopMinFrames == min && cur.m_LoopSamples == s) return; // unchanged
-            EntityManager.SetComponentData(line, new LineMeasuredTravel { m_LoopEmaFrames = ema, m_LoopMinFrames = min, m_LoopSamples = s });
+            if (cur.m_LoopEmaFrames == ema && cur.m_LoopMinFrames == min && cur.m_LoopSamples == s
+                && cur.m_LoopMedianFrames == med) return;                                               // unchanged
+            EntityManager.SetComponentData(line, new LineMeasuredTravel {
+                m_LoopEmaFrames = ema, m_LoopMinFrames = min, m_LoopSamples = s, m_LoopMedianFrames = med });
         }
 
         // Clean uninstall (Options button): wipe every trace of the mod from the current save. For each timetabled line
@@ -1715,6 +1768,7 @@ namespace TransitTimetables
                         m_LineLoopEma[line] += kLoopAlpha * (loop - m_LineLoopEma[line]);
                     else
                         m_LineLoopEma[line] = loop;
+                    PushLoopSample(line, loop);
                     m_LineLoopSamples[line] = (m_LineLoopSamples.TryGetValue(line, out int nn) ? nn : 0) + 1;
                 }
             }
@@ -1758,11 +1812,38 @@ namespace TransitTimetables
             int streak = (m_LineRejectStreak.TryGetValue(line, out int rs) ? rs : 0) + 1;
             if (streak >= kResetAfterRejects)
             {
-                m_LineLoopMin[line] = loop;
+                // RECALIBRATE THE ANCHOR, KEEP THE MEASUREMENT.
+                //
+                // This path exists for one real case: the route genuinely got longer, so the old minimum is now
+                // impossibly low, every honest lap trips the 1.6x band, and without an escape the line would reject
+                // samples forever. That much is still needed. What it must NOT do is throw the line's history away.
+                //
+                // Observed live, three times in ten minutes, each worse than the last:
+                //   line#322238  67 samples discarded, correction 2.68 -> 3.34   (+25%)
+                //   line#322237  129 samples discarded, dropped to the density PRIOR, 1.90 -> 2.79   (+47%)
+                //   line#1580787 anchor 95.2 -> 324.1, correction 1.05 -> 3.58   (+240%)
+                // The last had the best-measured value in the city and re-anchored onto a TRIPLE-counted lap.
+                //
+                // The mechanism is perverse: the anchor is only vulnerable ONCE IT IS CORRECT. While it sits on a
+                // double, ordinary doubles look normal and nothing is rejected. The moment it finds the true single
+                // loop, every double becomes an outlier, the streak builds, and the reset replaces the correct value
+                // with one of the very readings it was right to distrust. Better measurement caused the destruction.
+                //
+                // Two changes. First, re-anchor to the MINIMUM OF THE RECENT WINDOW rather than to `loop` — that
+                // triggering sample is by definition an outlier (> 1.6x the anchor) and may be a double or a triple,
+                // which is exactly how 1580787 landed on 324 minutes. The window's own minimum is the best available
+                // estimate of a real single loop. Second, keep the window, median, EMA and sample count: a rolling
+                // window already ages out stale data, which is the job this reset was invented to do.
+                float reanchor = loop;
+                if (m_LineLoopWindow.TryGetValue(line, out List<float> win) && win.Count > 0)
+                {
+                    float wmin = win[0];
+                    for (int i = 1; i < win.Count; i++) if (win[i] < wmin) wmin = win[i];
+                    if (wmin > 0f) reanchor = wmin;
+                }
+                m_LineLoopMin[line] = reanchor;
                 m_LineRejectStreak.Remove(line);
-                m_LineLoopEma.Remove(line);      // old baseline was stale — re-measure the value from scratch
-                m_LineLoopSamples.Remove(line);
-                return true;
+                return true;                     // accepted: it flows into the window and EMA like any other sample
             }
             m_LineRejectStreak[line] = streak;
             return false;
@@ -1772,13 +1853,78 @@ namespace TransitTimetables
         // Uses the LIVE measurement once the line has logged enough clean loops; until then, the stop-density prior as a
         // cold-start seed. Clamped for safety (grow-only for fleet). durUnits is the line's estimated loop in route units.
         // Public so the panel/board (TransitParamsUISystem) can post the same corrected times the holds use.
+        // Add an accepted lap to the line's rolling window and recompute its median. Called only from MeasureLap, so
+        // the sample has already passed AcceptLoopSample. Recomputing on INSERT rather than on read keeps
+        // LineCorrection allocation-free - it runs from the UI on every panel refresh as well as from the dispatch.
+        private void PushLoopSample(Entity line, uint loop)
+        {
+            if (!m_LineLoopWindow.TryGetValue(line, out List<float> w))
+                m_LineLoopWindow[line] = w = new List<float>(kLoopWindow);
+            w.Add(loop);
+            if (w.Count > kLoopWindow)
+                w.RemoveAt(0);              // oldest out: a rolling window also self-heals a route that got longer
+            // ONLY publish a median once the WINDOW itself is deep enough — never off the persisted sample count.
+            // n is restored from the save but the window is not, so a reloaded line sits at n=106 with an empty
+            // window; without this guard its very first fresh lap would publish a ONE-SAMPLE "median" and, because
+            // n >= kMedianMinSample already passes, immediately drive the correction off that single lap. That is
+            // precisely the fragility the median exists to remove. Until the window fills, whatever was rehydrated
+            // from the save stands, and a line with nothing stored stays on the conservative anchor.
+            if (w.Count >= kMedianMinSample)
+                m_LineLoopMedian[line] = Median(w);
+        }
+
+        // Median of the window. Sorts a scratch COPY so the window itself stays in arrival order - the ring has to
+        // drop the OLDEST entry, not the smallest. Even counts average the two middles.
+        private readonly List<float> m_MedianScratch = new List<float>(kLoopWindow);
+        private float Median(List<float> w)
+        {
+            if (w == null || w.Count == 0) return 0f;
+            m_MedianScratch.Clear();
+            m_MedianScratch.AddRange(w);
+            m_MedianScratch.Sort();
+            int c = m_MedianScratch.Count;
+            return (c & 1) == 1 ? m_MedianScratch[c / 2]
+                                : 0.5f * (m_MedianScratch[c / 2 - 1] + m_MedianScratch[c / 2]);
+        }
+
         public float LineCorrection(Entity line, float durUnits, bool forFleet)
         {
             float estFrames = durUnits * 60f;
             float factor;
-            if (m_LineLoopSamples.TryGetValue(line, out int n) && n >= kMinTrustSamples
-                && m_LineLoopEma.TryGetValue(line, out float ema) && estFrames > 1f)
-                factor = ema / estFrames;                                            // measured (frames/frames)
+            // USE THE RUNNING MIN, NOT THE EMA.
+            //
+            // AcceptLoopSample exists on one insight: a missed terminus pass makes a span a MULTIPLE of the real loop,
+            // never a fraction, so the true single loop is the MINIMUM of the observed spans. It gates on that min --
+            // and then this method used to read the EMA instead, which averages every sample accepted anywhere in
+            // [min, 1.6*min]. The correction therefore sat systematically ABOVE the value the code itself identifies
+            // as the truth, and the busier the line the worse it got, because a busy terminus is exactly where passes
+            // are missed and doubles enter the sample set. Live report: a 50-stop subway with a 2-minute headway read
+            // 2.9x and asked for 117 vehicles.
+            //
+            // KNOWN TRADE-OFF, accepted deliberately. The min is absolute where the EMA was smoothed, so one
+            // spuriously SHORT lap now redefines the correction outright instead of being averaged away. Three things
+            // bound that: AcceptLoopSample rejects anything below 0.40x the estimate, so a glitch cannot pin the
+            // anchor arbitrarily low; ClampCorrection floors the FLEET factor at 1.0, so under-measurement can never
+            // provision fewer vehicles than the plain estimate would; and a persistent run of higher samples
+            // re-anchors upward via kResetAfterRejects, which is the existing heal for a stale-low min.
+            //
+            // The EMA is still maintained and still logged next to the anchor in the [SelfTest] laptime line -- keep
+            // it, because the gap between the two is the diagnostic that shows whether a line is accumulating doubles.
+            // THREE-STAGE LADDER; each rung is only taken once the data supports it.
+            //   < kMinTrustSamples   density prior (board) / factor 1 (fleet - the caller gates that)
+            //   >= kMinTrustSamples  the ANCHOR, conservative. It errs LOW, and ClampCorrection floors the fleet
+            //                        factor at 1.0, so the worst an immature line can do is provision what the plain
+            //                        estimate would have. Under-provision briefly rather than buy a fleet off 4 laps.
+            //   >= kMedianMinSample  the MEDIAN, accurate and robust to the doubles that made the EMA useless.
+            //                        Deliberately NOT at 4: a median of four is barely more robust than a minimum,
+            //                        because two doubles out of four already captures it.
+            bool haveN = m_LineLoopSamples.TryGetValue(line, out int n);
+            if (haveN && n >= kMedianMinSample
+                && m_LineLoopMedian.TryGetValue(line, out float med) && med > 0f && estFrames > 1f)
+                factor = med / estFrames;                                            // measured, median of the window
+            else if (haveN && n >= kMinTrustSamples
+                && m_LineLoopMin.TryGetValue(line, out float minLoop) && estFrames > 1f)
+                factor = minLoop / estFrames;                                        // measured, conservative anchor
             else
                 factor = ScheduleMath.DensityPriorRatio(CountStops(line), durUnits); // bootstrap from stop density
             return ScheduleMath.ClampCorrection(factor, forFleet);
@@ -1788,6 +1934,31 @@ namespace TransitTimetables
         // density prior — used by the panel to label the real-loop figure "measured" vs "estimated".
         public bool LineCorrectionMeasured(Entity line)
             => m_LineLoopSamples.TryGetValue(line, out int n) && n >= kMinTrustSamples;
+
+        // Lap-timing progress for the panel: how many clean loops this line has contributed so far, and how many it
+        // needs before the measured correction takes over from the cold-start estimate. Exposed so the player can see
+        // that a line is still learning rather than being left to wonder why its vehicle count is what it is.
+        public int LineLoopSampleCount(Entity line)
+            => m_LineLoopSamples.TryGetValue(line, out int n) ? n : 0;
+        public static int MinTrustSamples => kMinTrustSamples;
+        public static int MedianMinSamples => kMedianMinSample;
+
+        // Laps in the ROLLING WINDOW, which is what actually gates the median — not LineLoopSampleCount, which is the
+        // lifetime total and is restored from the save while the window is not. Showing the lifetime count against
+        // the median threshold produced "42 of 10 laps" in the panel.
+        public int LineLoopWindowCount(Entity line)
+            => m_LineLoopWindow.TryGetValue(line, out List<float> w) ? w.Count : 0;
+
+        // Which rung of the correction ladder this line is on, for the panel: 0 = nothing measured yet (the fleet
+        // falls back to the game's plain estimate), 1 = the conservative ANCHOR is driving it, 2 = the MEDIAN is.
+        // Mirrors the branch order in LineCorrection exactly, so the label can never disagree with the number.
+        public int LineCorrectionStage(Entity line)
+        {
+            int n = m_LineLoopSamples.TryGetValue(line, out int c) ? c : 0;
+            if (n >= kMedianMinSample && m_LineLoopMedian.TryGetValue(line, out float med) && med > 0f) return 2;
+            if (n >= kMinTrustSamples && m_LineLoopMin.ContainsKey(line)) return 1;
+            return 0;
+        }
 
         // Count the line's boarding stops (route waypoints connected to a stop platform), for the density prior. Matches
         // how FindTerminus / HoldAllStops identify a "stop" (a Connected waypoint whose target has a BoardingVehicle).

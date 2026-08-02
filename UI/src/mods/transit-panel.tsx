@@ -157,20 +157,34 @@ const WindowRow = ({ label, start$, end$, trigStart, trigEnd }:
 const RealInfo = ({ raw }: { raw: string }) => {
     const t = useT();
     if (!raw) return null;
-    let d: { real: number; est: number; corr: string; meas: boolean; mode: string; n: number };
+    let d: { real: number; est: number; corr: string; meas: boolean; mode: string; n: number; laps?: number; need?: number; stage?: number; need2?: number; wlaps?: number };
     try { d = JSON.parse(raw); } catch { return null; }
     if (!d || typeof d.real !== "number") return null;
-    const vars = { real: d.real, est: d.est, corr: d.corr, n: d.n };
-    const head = d.meas
-        ? t("realLoopMeasured", "Real loop ~{real} min ({corr}x the {est}-min estimate, measured).", vars)
-        : t("realLoopEstimated", "Real loop ~{real} min ({corr}x the {est}-min estimate, estimated).", vars);
+    const vars = { real: d.real, est: d.est, corr: d.corr, n: d.n, laps: d.laps ?? 0, need: d.need ?? 0, need2: d.need2 ?? 0, wlaps: d.wlaps ?? 0 };
+    // THREE STAGES, matching the correction ladder in LineCorrection. The point is that the vehicle count in the
+    // sentence after this one comes from a DIFFERENT estimator at each stage, and the player deserves to know which:
+    //   0  nothing measured yet -- the count is derived from the game's own estimate, not from anything observed
+    //   1  the conservative anchor is driving it. It errs LOW on purpose, so the count will usually RISE when the
+    //      median takes over. Saying so here is the whole reason this stage has its own text: an unannounced jump
+    //      in vehicle count reads as the mod breaking.
+    //   2  the median is driving it. Still a rolling window, so it can drift -- "measured", never "final".
+    const stage = d.stage ?? (d.meas ? 2 : 0);
+    const head =
+        stage === 0 ? t("loopMeasuring", "Real loop is still being measured ({laps} of {need} laps).", vars)
+        : stage === 1 ? t("loopRefining", "Real loop is about {real} min, still refining ({wlaps} of {need2} laps).", vars)
+        : t("loopMeasured", "Real loop is {real} min, measured ({corr}x the {est}-min estimate).", vars);
     const tail =
         d.mode === "prov" ? t("provisioning", "Provisioning ~{n} vehicles for it.", vars)
         : d.mode === "notmine" ? t("notSetByMod", "This headway needs ~{n} vehicles. This mod is not setting the count.", vars)
         : t("sizingSoon", "Sizing this line as soon as its duration estimate settles.");
+    // Only stage 1 gets a caveat, and it is specifically about the count RISING. Stage 0 already says it is
+    // measuring; stage 2 has nothing left to warn about.
+    const caveat = stage === 1
+        ? " " + t("countMayRise", "That count is deliberately cautious and may rise once measuring completes.", vars)
+        : "";
     return (
         <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", marginBottom: "6rem", lineHeight: 1.35 }}>
-            {head + " " + tail}
+            {head + " " + tail + caveat}
         </div>
     );
 };

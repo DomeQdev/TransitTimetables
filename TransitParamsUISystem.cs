@@ -675,6 +675,15 @@ namespace TransitTimetables
               .Append(",\"corr\":\"").Append(corr.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)).Append('"')
               .Append(",\"meas\":").Append(measured ? "true" : "false")
               .Append(",\"mode\":\"").Append(mode).Append('"')
+              // Lap-timing progress, so a line that is still learning says so instead of silently showing a number
+              // derived from the cold-start estimate. Only meaningful while meas is false; the UI ignores it after.
+              .Append(",\"laps\":").Append(m_Dispatch.LineLoopSampleCount(line))
+              .Append(",\"need\":").Append(TimetableDispatchSystem.MinTrustSamples)
+              // Which estimator is actually driving the count, so the panel can say so rather than implying the
+              // number is measured when it is still the game's plain estimate.
+              .Append(",\"stage\":").Append(m_Dispatch.LineCorrectionStage(line))
+              .Append(",\"need2\":").Append(TimetableDispatchSystem.MedianMinSamples)
+              .Append(",\"wlaps\":").Append(m_Dispatch.LineLoopWindowCount(line))
               .Append(",\"n\":").Append(n).Append('}');
             return sb.ToString();
         }

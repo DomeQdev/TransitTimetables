@@ -21,8 +21,14 @@ namespace TransitTimetables
         public float m_LoopEmaFrames;   // EMA of the measured terminus->terminus loop (frames); mirrors m_LineLoopEma
         public float m_LoopMinFrames;   // running MIN loop (frames); mirrors m_LineLoopMin (the true single loop; doubles sit above)
         public ushort m_LoopSamples;    // clamped loop-sample count; mirrors m_LineLoopSamples (>= kMinTrustSamples => trusted on load)
+        // v2. MEDIAN of the recent-lap window (frames) - the value the correction uses once a line has enough laps.
+        // Persisted so a reload does not drop back to the (lower, conservative) anchor and churn every fleet down and
+        // then back up. 0 when the line has not yet earned a median.
+        public float m_LoopMedianFrames;
 
-        private const byte kVersion = 1;
+        // v1 -> v2 added m_LoopMedianFrames. Deserialize GATES on the stored byte, so a v1 save loads with median 0 and
+        // simply keeps using the anchor until it re-earns one. This is the growth path the version byte exists for.
+        private const byte kVersion = 2;
 
         public void Serialize<TWriter>(TWriter writer) where TWriter : IWriter
         {
@@ -30,14 +36,17 @@ namespace TransitTimetables
             writer.Write(m_LoopEmaFrames);
             writer.Write(m_LoopMinFrames);
             writer.Write(m_LoopSamples);
+            writer.Write(m_LoopMedianFrames);
         }
 
         public void Deserialize<TReader>(TReader reader) where TReader : IReader
         {
-            reader.Read(out byte _);   // version (reserved for future field growth)
+            reader.Read(out byte version);
             reader.Read(out m_LoopEmaFrames);
             reader.Read(out m_LoopMinFrames);
             reader.Read(out m_LoopSamples);
+            if (version >= 2) reader.Read(out m_LoopMedianFrames);
+            else m_LoopMedianFrames = 0f;   // v1 save: nothing stored, fall back to the anchor until re-earned
         }
     }
 }

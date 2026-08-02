@@ -11,14 +11,24 @@ const register: ModRegistrar = (moduleRegistry) => {
     try {
         const SECTIONS = "game-ui/game/components/selected-info-panel/selected-info-sections/selected-info-sections.tsx";
         const map: any = getModule(SECTIONS, "selectedInfoSectionComponents");
+        // IDEMPOTENT. register() can run more than once in a session — returning to the main menu and loading
+        // another city re-runs it — and the old version re-wrapped blindly: the second call read OUR OWN wrapper
+        // out of the map as `Orig` and wrapped that, so the panel rendered the original section once and the
+        // timetable editor TWICE (community screenshot: one LINE block, two TIMETABLE blocks). A third load would
+        // have given three. Tag the wrapper and bail if the slot already holds one.
+        const TAG = "__ttWrapped";
         const wrap = (typeName: string) => {
             const Orig = map[typeName];
-            map[typeName] = (props: any) => (
+            if (Orig && (Orig as any)[TAG])
+                return; // already ours — do not stack another layer
+            const Wrapped = (props: any) => (
                 <>
                     {Orig ? <Orig {...props} /> : null}
                     <Safe><TimetableEditor /></Safe>
                 </>
             );
+            (Wrapped as any)[TAG] = true;
+            map[typeName] = Wrapped;
         };
         wrap("Game.UI.InGame.LineSection");
         console.info("[TransitTimetables] line section wrapped");
