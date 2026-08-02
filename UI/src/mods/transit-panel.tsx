@@ -221,20 +221,34 @@ const VehicleSchedule = ({ raw }: { raw: string }) => {
     // minute is this stop's DEPARTURE, and an early vehicle is being held here on purpose to keep the timetable.
     // Saying "running 2 min early" about a vehicle the player can see standing still reads as a fault; it is the
     // mod working. Reported from a station: "it said the vehicle is x minutes early while sitting in the station".
+    // A DEVIATION IS ONLY CLAIMED WHERE IT IS OBSERVABLE.
+    //
+    // At a stop, "now" against that stop's scheduled DEPARTURE is exact, and both directions are meaningful.
+    //
+    // In transit it is not. The offsets are departure times, so `now - nextDeparture` while moving is simply the
+    // countdown to that departure, and reporting it as earliness produced the nonsense a punctual bus two minutes
+    // into a ten-minute leg was "8 min early", shrinking to zero on every single leg.
+    //
+    // Nor can lateness be carried forward from the last stop: the offsets come from the MEASURED loop, which is an
+    // average, so a leg run in lighter traffic or with quicker boarding recovers time. A vehicle that left 2 min
+    // late can and does arrive on time, and asserting the old figure would be stale.
+    //
+    // What IS observable while moving: once the clock passes the next stop's scheduled departure and the vehicle
+    // still is not there, it is behind by exactly that overrun, without knowing where along the leg it is. That is
+    // a lower bound which only grows until it arrives. Before that moment, no claim at all.
     const status = d.brd
         ? (late < 0 ? t("vehHolding", "Waiting here until {at}, its scheduled departure.", vars)
            : late > 0 ? t("vehAtStopLate", "At this stop, {n} min behind its {at} departure.", vars)
            : t("vehAtStop", "At this stop, departing {at}.", vars))
-        : (late > 0 ? t("vehLate", "Running {n} min late.", vars)
-           : late < 0 ? t("vehEarly", "Running {n} min early.", vars)
-           : t("vehOnTime", "Running on time.", vars));
+        : (late > 0 ? t("vehBehind", "Running {n} min behind schedule. Its next stop was due at {at}.", vars)
+           : t("vehNextStop", "Next stop due at {at}.", vars));
     // Same honesty as the line panel: a line still learning its loop should not present a firm minute.
     const caveat = d.stage < 2
         ? " " + t("vehRefining", "This line is still measuring its real loop, so these times will shift.", vars)
         : "";
     return (
         <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", padding: "4rem 14rem 8rem", lineHeight: 1.35 }}>
-            {status + (d.brd ? "" : " " + t("vehNextStop", "Due at its next stop at {at}.", vars)) + caveat}
+            {status + caveat}
         </div>
     );
 };
