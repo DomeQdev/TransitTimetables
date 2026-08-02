@@ -1,6 +1,6 @@
 import { ModRegistrar, getModule } from "cs2/modding";
 import { Safe } from "mods/safe";
-import { TimetableEditor, TransitButton, TransitPanelHost, MigrationNotice } from "mods/transit-panel";
+import { TimetableEditor, TransitButton, TransitPanelHost, MigrationNotice, VehicleScheduleRow } from "mods/transit-panel";
 
 const register: ModRegistrar = (moduleRegistry) => {
     console.info("[TransitTimetables] register() running");
@@ -17,21 +17,23 @@ const register: ModRegistrar = (moduleRegistry) => {
         // timetable editor TWICE (community screenshot: one LINE block, two TIMETABLE blocks). A third load would
         // have given three. Tag the wrapper and bail if the slot already holds one.
         const TAG = "__ttWrapped";
-        const wrap = (typeName: string) => {
+        const wrap = (typeName: string, render: () => any) => {
             const Orig = map[typeName];
             if (Orig && (Orig as any)[TAG])
                 return; // already ours — do not stack another layer
             const Wrapped = (props: any) => (
                 <>
                     {Orig ? <Orig {...props} /> : null}
-                    <Safe><TimetableEditor /></Safe>
+                    <Safe>{render()}</Safe>
                 </>
             );
             (Wrapped as any)[TAG] = true;
             map[typeName] = Wrapped;
         };
-        wrap("Game.UI.InGame.LineSection");
-        console.info("[TransitTimetables] line section wrapped");
+        wrap("Game.UI.InGame.LineSection", () => <TimetableEditor />);
+        // Selected vehicle: how far off schedule it is and when it is due next. Same map, same idempotent guard.
+        wrap("Game.UI.InGame.PublicTransportVehicleSection", () => <VehicleScheduleRow />);
+        console.info("[TransitTimetables] line + vehicle sections wrapped");
     } catch (e) {
         console.info("[TransitTimetables] section wrap error: " + String(e));
     }

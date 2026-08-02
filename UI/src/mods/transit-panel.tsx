@@ -34,6 +34,8 @@ const nightHours$ = bindValue<string>(G, "nightHours", "");
 const selStopHas$ = bindValue<boolean>(G, "selStopHas", false);
 const selStopBoard$ = bindValue<string>(G, "selStopBoard", "[]");
 const autoOpen$ = bindValue<number>(G, "autoOpen", 0);
+// Selected VEHICLE schedule status (community request: is this train late, when is it due next).
+const selVehInfo$ = bindValue<string>(G, "selVehInfo", "");
 // One-time migration notice. A counter rather than a flag, so a late-mounting host still sees the change.
 const noticeSeq$ = bindValue<number>(G, "noticeSeq", 0);
 // Last counter value we have RAISED a dialog for. Module-level, NOT a useRef inside the component, and this matters
@@ -187,6 +189,52 @@ const RealInfo = ({ raw }: { raw: string }) => {
             {head + " " + tail + caveat}
         </div>
     );
+};
+
+// Injected into the native PublicTransportVehicleSection, so it shows when a bus/train/tram is selected. Renders
+// nothing unless that vehicle is on a line with an ENABLED timetable, so it is inert on freight and on untimetabled
+// lines. C# sends numbers only; the sentence is assembled here from a per-language template, same as RealInfo.
+const VehicleSchedule = ({ raw }: { raw: string }) => {
+    const t = useT();
+    if (!raw) return null;
+    let d: { onTt: boolean; late: number; next: number; stage: number };
+    try { d = JSON.parse(raw); } catch { return null; }
+    if (!d) return null;
+
+    // No slot yet. The game spawns from the depot onto the nearest stop, so a vehicle that joined mid route runs
+    // unscheduled until it first reaches the terminus. It is not late, it has no schedule to be late against.
+    if (!d.onTt)
+        return (
+            <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", padding: "4rem 14rem 8rem", lineHeight: 1.35 }}>
+                {t("vehNotOnTimetable", "Not yet on the timetable. It picks up its schedule when it first reaches the terminus.")}
+            </div>
+        );
+
+    const late = Math.round(d.late);
+    const hm = (m: number) => {
+        const x = ((Math.round(m) % 1440) + 1440) % 1440;
+        const h = Math.floor(x / 60), mm = x % 60;
+        return (h < 10 ? "0" : "") + h + ":" + (mm < 10 ? "0" : "") + mm;
+    };
+    const vars = { n: Math.abs(late), at: hm(d.next) };
+    const status =
+        late > 0 ? t("vehLate", "Running {n} min late.", vars)
+        : late < 0 ? t("vehEarly", "Running {n} min early.", vars)
+        : t("vehOnTime", "Running on time.", vars);
+    // Same honesty as the line panel: a line still learning its loop should not present a firm minute.
+    const caveat = d.stage < 2
+        ? " " + t("vehRefining", "This line is still measuring its real loop, so these times will shift.", vars)
+        : "";
+    return (
+        <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", padding: "4rem 14rem 8rem", lineHeight: 1.35 }}>
+            {status + " " + t("vehNextStop", "Due at its next stop at {at}.", vars) + caveat}
+        </div>
+    );
+};
+
+export const VehicleScheduleRow = () => {
+    const raw = useValue(selVehInfo$) as string;
+    return <VehicleSchedule raw={raw} />;
 };
 
 export const TimetableEditor = () => {

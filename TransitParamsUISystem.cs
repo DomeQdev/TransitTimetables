@@ -32,12 +32,13 @@ namespace TransitTimetables
         private bool m_SelTtEnabled;
         private int m_SelTtFirst, m_SelTtPeak, m_SelTtOffPeak, m_SelTtNight, m_SelTtInterval, m_SelTtFleet;
         private string m_SelTtNext = "";
+        private string m_SelVehInfo = "";           // selected VEHICLE: late/early + next stop time (community request)
         private string m_SelTtRealInfo = "";        // honest real-travel-time line (real loop vs estimate + fleet consequence)
         private int m_SelSchedule = 2;              // RouteSchedule: 0=Day, 1=Night, 2=DayAndNight (which intervals apply)
         private string m_PeakHours = "", m_NightHours = "";
         private GetterValueBinding<bool> m_SelHasB, m_SelTtEnabledB;
         private GetterValueBinding<int> m_SelTtFirstB, m_SelTtPeakB, m_SelTtOffPeakB, m_SelTtNightB, m_SelTtIntervalB, m_SelTtFleetB, m_SelScheduleB;
-        private GetterValueBinding<string> m_SelTtNextB, m_PeakHoursB, m_NightHoursB, m_SelTtRealInfoB;
+        private GetterValueBinding<string> m_SelTtNextB, m_PeakHoursB, m_NightHoursB, m_SelTtRealInfoB, m_SelVehInfoB;
         // Per-line custom peak (PR #5): enabled + interval + two hour windows.
         private bool m_SelCustomPeakEnabled;
         private int m_SelCustomPeakInterval = 5, m_SelCustomPeakStart1 = 7, m_SelCustomPeakEnd1 = 9, m_SelCustomPeakStart2 = 16, m_SelCustomPeakEnd2 = 18;
@@ -99,6 +100,7 @@ namespace TransitTimetables
             m_SelTtFleetB = new GetterValueBinding<int>(Group, "selTtFleet", () => m_SelTtFleet);
             m_SelTtNextB = new GetterValueBinding<string>(Group, "selTtNext", () => m_SelTtNext ?? "");
             m_SelTtRealInfoB = new GetterValueBinding<string>(Group, "selTtRealInfo", () => m_SelTtRealInfo ?? "");
+            m_SelVehInfoB = new GetterValueBinding<string>(Group, "selVehInfo", () => m_SelVehInfo ?? "");
             m_SelCustomPeakEnabledB = new GetterValueBinding<bool>(Group, "selCustomPeakEnabled", () => m_SelCustomPeakEnabled);
             m_SelCustomPeakIntervalB = new GetterValueBinding<int>(Group, "selCustomPeakInterval", () => m_SelCustomPeakInterval);
             m_SelCustomPeakStart1B = new GetterValueBinding<int>(Group, "selCustomPeakStart1", () => m_SelCustomPeakStart1);
@@ -123,6 +125,7 @@ namespace TransitTimetables
             AddBinding(m_SelTtFleetB);
             AddBinding(m_SelTtNextB);
             AddBinding(m_SelTtRealInfoB);
+            AddBinding(m_SelVehInfoB);
             AddBinding(m_SelCustomPeakEnabledB);
             AddBinding(m_SelCustomPeakIntervalB);
             AddBinding(m_SelCustomPeakStart1B);
@@ -281,6 +284,9 @@ namespace TransitTimetables
             base.OnUpdate();
             Entity sel = m_ToolSystem != null ? m_ToolSystem.selected : Entity.Null;
             int nowMin = (int)(m_TimeSystem.normalizedTime * 1440f) % 1440;
+            // Vehicle row: cheap, and must track the LIVE selection every frame, not only when the refresh gate
+            // opens - a selected bus moves between stops without the minute changing.
+            m_SelVehInfo = BuildVehInfo(sel);
             if (m_UiDirty || sel != m_LastRefreshSel || nowMin != m_LastRefreshMinute)
             {
                 m_UiDirty = false;
@@ -298,6 +304,7 @@ namespace TransitTimetables
             m_SelTtFleetB.Update();
             m_SelTtNextB.Update();
             m_SelTtRealInfoB.Update();
+            m_SelVehInfoB.Update();
             m_SelCustomPeakEnabledB.Update();
             m_SelCustomPeakIntervalB.Update();
             m_SelCustomPeakStart1B.Update();
@@ -627,6 +634,28 @@ namespace TransitTimetables
         // real loop is from the game's own estimate, and the fleet consequence. Shown REGARDLESS of the toggles so the
         // player can SEE the gap and decide whether to correct the clock / provision the fleet. Empty when the estimate is
         // already close or there is nothing to measure.
+        // Selected VEHICLE: how far off its schedule it is, and when it is due at its next stop. Empty string when
+        // the selection is not a public-transport vehicle on an enabled timetable, so the row renders nothing at all.
+        // "onTt" false means the vehicle has not reached the terminus yet and has no slot - not late, just not on the
+        // timetable. "stage" mirrors the line panel so a still-measuring line does not present a firm number.
+        private string BuildVehInfo(Entity sel)
+        {
+            if (m_Dispatch == null || sel == Entity.Null) return "";
+            if (!EntityManager.HasComponent<Game.Vehicles.PublicTransport>(sel)) return "";
+            if (!EntityManager.HasComponent<CurrentRoute>(sel)) return "";
+            Entity line = EntityManager.GetComponentData<CurrentRoute>(sel).m_Route;
+            if (line == Entity.Null || !EntityManager.HasComponent<TimetableSchedule>(line)) return "";
+            if (!EntityManager.GetComponentData<TimetableSchedule>(line).m_Enabled) return "";
+
+            bool onTt = m_Dispatch.TryVehicleSchedule(sel, out int lateMin, out int nextMin, out int stage);
+            var sb = new StringBuilder();
+            sb.Append("{\"onTt\":").Append(onTt ? "true" : "false")
+              .Append(",\"late\":").Append(lateMin)
+              .Append(",\"next\":").Append(nextMin)
+              .Append(",\"stage\":").Append(stage).Append('}');
+            return sb.ToString();
+        }
+
         private string BuildRealInfo(Entity line, float dur, float um)
         {
             if (m_Dispatch == null || dur <= 1f) return "";

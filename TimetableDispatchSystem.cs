@@ -1943,6 +1943,47 @@ namespace TransitTimetables
         public static int MinTrustSamples => kMinTrustSamples;
         public static int MedianMinSamples => kMedianMinSample;
 
+        // SCHEDULE STATUS FOR ONE VEHICLE, for the vehicle info panel. Community request: "is this train late, and
+        // when is it due at its next stop".
+        //
+        // Computed HERE rather than in the UI on purpose. The scheduled time at a stop is the vehicle's slot shifted
+        // by that stop's posted offset, which is exactly what HoldStop does (`slotFrame += offMin * m_Fpm`) before it
+        // decides whether to hold. A second copy of that expression in the panel is how the printed board once came
+        // to disagree with the vehicles by 45 minutes, so the panel reads this and never re-derives it.
+        //
+        // Returns false when the vehicle has no slot yet. That is the mid-route join case: the game spawns from the
+        // depot onto the nearest stop, and such a vehicle deliberately runs unscheduled until it first reaches the
+        // terminus. It is not late, it is simply not on the timetable yet, and the panel says so.
+        public bool TryVehicleSchedule(Entity veh, out int lateMin, out int nextStopMin, out int stage)
+        {
+            lateMin = 0; nextStopMin = -1; stage = 0;
+            if (veh == Entity.Null || !EntityManager.HasComponent<CurrentRoute>(veh))
+                return false;
+            Entity line = EntityManager.GetComponentData<CurrentRoute>(veh).m_Route;
+            if (line == Entity.Null || !EntityManager.HasComponent<TimetableSchedule>(line))
+                return false;
+            if (!EntityManager.GetComponentData<TimetableSchedule>(line).m_Enabled)
+                return false;
+            stage = LineCorrectionStage(line);
+            if (!m_RunSlotFrame.TryGetValue(veh, out uint slotFrame) || m_Fpm <= 0.01f)
+                return false;                                  // no slot: not on the timetable yet
+
+            // The stop it is heading for. Same offset table the board and the holds use.
+            int offMin = 0;
+            if (EntityManager.HasComponent<Target>(veh))
+            {
+                Entity wp = EntityManager.GetComponentData<Target>(veh).m_Target;
+                if (wp != Entity.Null) m_PostedOffset.TryGetValue(wp, out offMin);
+            }
+            long sched = (long)slotFrame + (long)(offMin * m_Fpm);
+            uint frame = m_Sim.frameIndex;
+            lateMin = (int)System.Math.Round((frame - (double)sched) / m_Fpm);   // + late, - early
+            int nowMin = (int)(m_Time.normalizedTime * 1440f) % 1440;
+            int deltaMin = (int)System.Math.Round((sched - (double)frame) / m_Fpm);
+            nextStopMin = (((nowMin + deltaMin) % 1440) + 1440) % 1440;
+            return true;
+        }
+
         // Laps in the ROLLING WINDOW, which is what actually gates the median — not LineLoopSampleCount, which is the
         // lifetime total and is restored from the save while the window is not. Showing the lifetime count against
         // the median threshold produced "42 of 10 laps" in the panel.
