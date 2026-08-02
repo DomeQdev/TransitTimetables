@@ -58,7 +58,7 @@ KNOWN ISSUES:
 
 - "Vehicles no longer un-bunch after removing the mod." The mod writes two values into a line's save data — an "unbunching factor" (an early pre-v0.2.3 build), and a "vehicle interval" it uses to size the fleet. If you remove or disable the mod WITHOUT first switching a line's timetable off, those values can stay frozen in the save (the base game never resets them), so vehicles leave a stop immediately without spacing out. FIXED as of v0.3.2.2: the mod now repairs both automatically on load, for every line, and safely — the vehicle interval is rebuilt from the line's own settings, so a count you set by hand with "Assigned Vehicles" is preserved. To repair an affected save: subscribe to v0.3.2.2 (or newer), load your city, then save. Normal unbunching returns, and you can keep or remove the mod afterwards.
 
-CREDITS: per-line custom peak windows (each line can override the global peak hours and run its own peak interval) were contributed by incconutwo. Thank you. Community bug reports have driven several releases, including the terminus stop fix, the mid-route spawn fix and the missed-trip catch-up.
+CREDITS: per-line custom peak windows (each line can override the global peak hours and run its own peak interval) were contributed by incconutwo. The per-vehicle schedule readout was suggested by ThisGuySucksAtCitys. Thank you both. Community bug reports have driven several releases, including the terminus stop fix, the mid-route spawn fix and the missed-trip catch-up.
 
 Source (open source, MIT): https://github.com/AmicusDeus/TransitTimetables
 
@@ -96,7 +96,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<ChangeLog>
 v0.5.2 [BETA] - See how late a vehicle is running
 
-- NEW: select a bus, tram or train on a timetabled line and its info panel tells you where it stands against the schedule. At a stop it says when it departs, and if it is waiting there early it says so plainly rather than calling it a delay, because holding an early vehicle until its departure time is the whole point of a timetable. On the move it gives the next stop's due time, and only claims the vehicle is behind once that time has passed and it still has not arrived. (Requested by a community member - thank you.)
+- NEW: select a bus, tram or train on a timetabled line and its info panel tells you where it stands against the schedule. At a stop it says when it departs, and if it is waiting there early it says so plainly rather than calling it a delay, because holding an early vehicle until its departure time is the whole point of a timetable. On the move it gives the next stop's due time, and only claims the vehicle is behind once that time has passed and it still has not arrived. (Requested by ThisGuySucksAtCitys - thank you.)
 
 - A vehicle that joined its line partway round, which is what happens when one leaves a depot, says it is not yet on the timetable. It has no scheduled departure to be measured against until it first reaches the terminus, so there is nothing honest to report before then.
 
