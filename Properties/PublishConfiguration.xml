@@ -11,7 +11,7 @@ Turn any public-transport line into a scheduled service. Works for every passeng
 
 WHAT'S NEW IN 0.5.2:
 
-- Select a vehicle to see whether it is running early, late or on time, and when it is due at its next stop. A vehicle held at a stop says it is waiting for its departure rather than reporting it as a delay.
+- Select a vehicle to see where it stands against the schedule and when it is due at its next stop. A vehicle held at a stop says it is waiting for its departure rather than reporting it as a delay.
 
 Earlier in 0.5.1:
 
@@ -96,7 +96,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<ChangeLog>
 v0.5.2 [BETA] - See how late a vehicle is running
 
-- NEW: select a bus, tram or train on a timetabled line and its info panel now tells you where it is against the schedule. Moving, it says whether it is early, late or on time, and when it is due at its next stop. Standing at a stop, it says when it departs - and if it is waiting there early, it says so plainly rather than reporting it as being off schedule, because holding an early vehicle until its departure time is the whole point of a timetable. (Requested by a community member - thank you.)
+- NEW: select a bus, tram or train on a timetabled line and its info panel tells you where it stands against the schedule. At a stop it says when it departs, and if it is waiting there early it says so plainly rather than calling it a delay, because holding an early vehicle until its departure time is the whole point of a timetable. On the move it gives the next stop's due time, and only claims the vehicle is behind once that time has passed and it still has not arrived. (Requested by a community member - thank you.)
 
 - A vehicle that joined its line partway round, which is what happens when one leaves a depot, says it is not yet on the timetable. It has no scheduled departure to be measured against until it first reaches the terminus, so there is nothing honest to report before then.
 
