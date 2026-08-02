@@ -9,7 +9,13 @@
 	<LongDescription>
 Turn any public-transport line into a scheduled service. Works for every passenger type: buses, trams, trains, metros, ferries and aircraft.
 
-WHAT'S NEW IN 0.5.0:
+WHAT'S NEW IN 0.5.1:
+
+- Vehicle counts stop over-shooting. The mod times how long a line really takes to go round, and on a busy line it could mistake two loops for one and then average that mistake in permanently. It now takes the middle reading rather than the average, so a stray bad timing no longer drags the answer up.
+- Lines stop suddenly asking for far more vehicles for no visible reason. A safety net meant for edited routes was firing on healthy lines and throwing away everything they had learned. It now keeps the learning and simply recalibrates.
+- The TIMETABLE panel no longer appears twice after loading a second city without restarting the game.
+
+Earlier in 0.5.0:
 
 - Your settings are saved properly now. All of my mods shared one internal name for their settings, and the game resolves them by that name, so all but one wrote nowhere and anything you changed came back as default the next session.
 - Vehicle counts are now a single setting with two states: the mod sizes your fleets, or you do.
@@ -75,7 +81,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-transittimetables-adjust-departure-times-and-frequencies-in-all-types-of-transit-systems.1936039/" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.5.0" />
+	<ModVersion Value="0.5.1" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -84,46 +90,33 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
-v0.5.0 [BETA] — Vehicle counts become one setting, fleet growth is staggered, and your settings actually save
+v0.5.1 [BETA] - Vehicle counts stop over-shooting, and stop jumping on their own
 
-This build carries the 0.4.x work as well, so if you did not pick up those releases their fixes are listed here too.
+Two problems, both about how the mod measures how long a line really takes to go round.
 
-Still BETA: reviewed closely, but not played through a long test. Please report anything odd on GitHub. You can step back without uninstalling: set "Maximum stop time" to 0 for the old departure behaviour, hand vehicle counts back to yourself, or pause everything with the master switch.
+- FIX: some lines asked for far too many vehicles. A community report showed a 50-stop subway wanting 117 of them. The count was arithmetically correct for the loop time the mod believed, but that loop time was wrong.
 
-- FIX: your settings were never being saved. All of my mods shared one internal name for their settings, and the game resolves them by that name, so all but one wrote nowhere and anything you changed came back as default the next session. Fixed across every mod.
+  The mod times a full round trip by watching a vehicle leave the terminus and come back. On a busy line it can miss a return, because another vehicle is occupying the boarding spot, and the next time it sees that vehicle two loops have gone by. It then records double the real time. It used to average every reading together, so those doubles dragged the answer up permanently and never came out again.
 
-- CHANGE: "Realistic travel time" is no longer a setting. It is always on. It cost nothing, it was off by default, and it is the entire point of the mod.
+  It now takes the middle reading instead of the average. A stray double no longer moves the answer, because more than half the readings would have to be wrong before it did. Your vehicle counts should be closer to what the line actually needs.
 
-- CHANGE: the three vehicle-count settings are now one, with two states: the mod sizes your fleets, or you do. A one-time notice explains it on first load.
+- FIX: a line could suddenly change its mind and ask for a lot more vehicles, for no reason you could see. The mod keeps a safety net for the case where you edit a route and it genuinely gets longer: if readings stop making sense against what it has learned, it throws the learning away and starts again.
 
-- NEW: fleet growth is staggered. When a line needed more vehicles the depot released them together, putting nine buses on the road as one clump, which is the bunching this mod exists to prevent. They now arrive one per departure interval.
+  That net was firing on lines that were working perfectly, and it was throwing away everything, sometimes hundreds of timed laps. Worse, it restarted from whichever odd reading happened to trigger it, which was often one of the bad doubles. One line went from correctly matching the game's own estimate to believing its route took three and a half times longer.
 
-- FIX: switching the mod or a timetable off now undoes only what the mod itself did. A count you set by hand with "Assigned Vehicles" survives.
+  It now keeps what it has learned and simply recalibrates. In testing it went from losing over a hundred laps and jumping 47%, to keeping every lap and moving 3%.
 
-- FIX: vehicles were throwing off passengers who were already boarding. The base game counts someone as a passenger the moment they START WALKING to the vehicle, so an on-time departure cancelled everyone still crossing the platform. Reported as "the bus fills up, then empties down to a certain amount, then leaves".
+- FIX: the TIMETABLE panel appeared twice on a line if you returned to the main menu and loaded another city without restarting the game.
 
-- CHANGE: "Minimum stop time" is now "Maximum stop time" and works the other way round. It caps how long a vehicle may keep waiting PAST its posted departure for people already boarding. It is a limit, not a target: a vehicle with nobody boarding still leaves exactly on its posted minute. 3 minutes by default, 0 to wait for nobody. Raise the rail value if passengers pile up on a busy platform.
+- The line panel now tells you which stage a line is at: still measuring, refining, or measured. While it is refining it says the count is deliberately cautious and may rise, so an increase later is expected rather than alarming.
 
-- NEW: missed trips are caught up. If a scheduled departure passes with no vehicle at the terminus, the next arrival covers the gap instead of cancelling the trip.
+Note for anyone who tracks these things: the mod stores a little more in your save than it used to. Older saves load fine and simply re-learn. Going back to 0.5.0 after running this is not something I have tested.
 
-- NEW: measured travel times are saved with your city, so posted times are right from the moment you load instead of relearning every session.
+v0.4.2 [BETA] - Steadier vehicle counts, and a retirement fix
 
-- NEW: "Remove all mod data from this save" in Options, for a clean uninstall with nothing left behind.
+- FIX: the vehicle count no longer flips back and forth by one. If a line's round trip sits close to a whole multiple of its interval - say a 28-to-32 minute loop on a 30 minute schedule - the calculated count could flap between one value and the next as traffic varied, buying and retiring a vehicle each time and leaving a gap in service. A reduction of ONE vehicle now has to hold steadily for about 20 minutes before it is acted on. A bigger change still applies immediately, and ADDING vehicles is never delayed. (Reported by a community member - thank you.)
 
-- FIX: vehicles could disappear mid-route instead of finishing their loop, and lines could shed vehicles below their target.
-
-- FIX: posted stop times could run backwards along a route while some stops had measured times and others were still estimating.
-
-- FIX: pressing X on the departures board now closes it, instead of shrinking it to a small bar.
-
-- The last English-only text is now localized, and the departures board no longer recalculates itself every frame.
-
-v0.4.2 [BETA] — Steadier vehicle counts, and a retirement fix
-
-- FIX: the vehicle count no longer flips back and forth by one. If a line's round trip sits close to a whole multiple of its interval — say a 28-to-32 minute loop on a 30 minute schedule — the calculated count could flap between one value and the next as traffic varied, buying and retiring a vehicle each time and leaving a gap in service. A reduction of ONE vehicle now has to hold steadily for about 20 minutes before it is acted on. A bigger change still applies immediately, and ADDING vehicles is never delayed. (Reported by a community member — thank you.)
-
-- FIX: a vehicle could retire at the terminus with nothing of its own line there to take the next departure, on a line whose vehicle count had gone up and then down again. The mod deliberately remembers a retirement decision so a brief moment with no vehicle at the terminus does not cancel it, but that memory was never cleared when the count went UP and the retirement was called off, so it could be reused later to skip the "is this departure covered?" check.
-
+- FIX: a vehicle could retire at the terminus with nothing of its own line there to take the next departure, on a line whose vehicle count had gone up and then down again.
 	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
 	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />
