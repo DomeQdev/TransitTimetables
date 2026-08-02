@@ -9,7 +9,11 @@
 	<LongDescription>
 Turn any public-transport line into a scheduled service. Works for every passenger type: buses, trams, trains, metros, ferries and aircraft.
 
-WHAT'S NEW IN 0.5.1:
+WHAT'S NEW IN 0.5.2:
+
+- Select a vehicle to see whether it is running early, late or on time, and when it is due at its next stop. A vehicle held at a stop says it is waiting for its departure rather than reporting it as a delay.
+
+Earlier in 0.5.1:
 
 - Vehicle counts stop over-shooting. The mod times how long a line really takes to go round, and on a busy line it could mistake two loops for one and then average that mistake in permanently. It now takes the middle reading rather than the average, so a stray bad timing no longer drags the answer up.
 - Lines stop suddenly asking for far more vehicles for no visible reason. A safety net meant for edited routes was firing on healthy lines and throwing away everything they had learned. It now keeps the learning and simply recalibrates.
@@ -73,15 +77,15 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	    safe: every publish now re-asserts them instead of wiping them.
 	    Upload order follows this order (they are renamed screenshot_01.., screenshot_02.. on upload). -->
 	<Screenshot Value="Properties/Screenshots/01-banner.jpg" />
-	<Screenshot Value="Properties/Screenshots/02-line5.jpg" />
-	<Screenshot Value="Properties/Screenshots/03-line6.jpg" />
+	<Screenshot Value="Properties/Screenshots/02-bus.jpg" />
+	<Screenshot Value="Properties/Screenshots/03-train.jpg" />
 	<Screenshot Value="Properties/Screenshots/04-options.jpg" />
 	<!--Tag, can be set multiple times-->
 	<Tag Value="" />
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-transittimetables-adjust-departure-times-and-frequencies-in-all-types-of-transit-systems.1936039/" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.5.1" />
+	<ModVersion Value="0.5.2" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -90,33 +94,23 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
+v0.5.2 [BETA] - See how late a vehicle is running
+
+- NEW: select a bus, tram or train on a timetabled line and its info panel now tells you where it is against the schedule. Moving, it says whether it is early, late or on time, and when it is due at its next stop. Standing at a stop, it says when it departs - and if it is waiting there early, it says so plainly rather than reporting it as being off schedule, because holding an early vehicle until its departure time is the whole point of a timetable. (Requested by a community member - thank you.)
+
+- A vehicle that joined its line partway round, which is what happens when one leaves a depot, says it is not yet on the timetable. It has no scheduled departure to be measured against until it first reaches the terminus, so there is nothing honest to report before then.
+
+- While a line is still learning how long its route really takes, the panel says so, since those times will still move.
+
 v0.5.1 [BETA] - Vehicle counts stop over-shooting, and stop jumping on their own
 
-Two problems, both about how the mod measures how long a line really takes to go round.
+- FIX: some lines asked for far too many vehicles. The mod times how long a line takes to go round by watching a vehicle leave the terminus and come back, and on a busy line it could miss a return and record two loops as one. It used to average every reading together, so those doubled timings dragged the answer up permanently. It now takes the middle reading instead, so a stray bad timing no longer moves it.
 
-- FIX: some lines asked for far too many vehicles. A community report showed a 50-stop subway wanting 117 of them. The count was arithmetically correct for the loop time the mod believed, but that loop time was wrong.
-
-  The mod times a full round trip by watching a vehicle leave the terminus and come back. On a busy line it can miss a return, because another vehicle is occupying the boarding spot, and the next time it sees that vehicle two loops have gone by. It then records double the real time. It used to average every reading together, so those doubles dragged the answer up permanently and never came out again.
-
-  It now takes the middle reading instead of the average. A stray double no longer moves the answer, because more than half the readings would have to be wrong before it did. Your vehicle counts should be closer to what the line actually needs.
-
-- FIX: a line could suddenly change its mind and ask for a lot more vehicles, for no reason you could see. The mod keeps a safety net for the case where you edit a route and it genuinely gets longer: if readings stop making sense against what it has learned, it throws the learning away and starts again.
-
-  That net was firing on lines that were working perfectly, and it was throwing away everything, sometimes hundreds of timed laps. Worse, it restarted from whichever odd reading happened to trigger it, which was often one of the bad doubles. One line went from correctly matching the game's own estimate to believing its route took three and a half times longer.
-
-  It now keeps what it has learned and simply recalibrates. In testing it went from losing over a hundred laps and jumping 47%, to keeping every lap and moving 3%.
+- FIX: a line could suddenly demand a lot more vehicles for no visible reason. A safety net meant for edited routes was firing on healthy lines and discarding everything they had learned, sometimes hundreds of timed laps, then restarting from whichever odd reading had triggered it. It now keeps what it has learned and simply recalibrates.
 
 - FIX: the TIMETABLE panel appeared twice on a line if you returned to the main menu and loaded another city without restarting the game.
 
-- The line panel now tells you which stage a line is at: still measuring, refining, or measured. While it is refining it says the count is deliberately cautious and may rise, so an increase later is expected rather than alarming.
-
-Note for anyone who tracks these things: the mod stores a little more in your save than it used to. Older saves load fine and simply re-learn. Going back to 0.5.0 after running this is not something I have tested.
-
-v0.4.2 [BETA] - Steadier vehicle counts, and a retirement fix
-
-- FIX: the vehicle count no longer flips back and forth by one. If a line's round trip sits close to a whole multiple of its interval - say a 28-to-32 minute loop on a 30 minute schedule - the calculated count could flap between one value and the next as traffic varied, buying and retiring a vehicle each time and leaving a gap in service. A reduction of ONE vehicle now has to hold steadily for about 20 minutes before it is acted on. A bigger change still applies immediately, and ADDING vehicles is never delayed. (Reported by a community member - thank you.)
-
-- FIX: a vehicle could retire at the terminus with nothing of its own line there to take the next departure, on a line whose vehicle count had gone up and then down again.
+- The line panel now says whether a line is still measuring, refining, or measured, and warns while refining that its vehicle count is cautious and may rise.
 	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
 	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />

@@ -648,8 +648,17 @@ namespace TransitTimetables
             if (!EntityManager.GetComponentData<TimetableSchedule>(line).m_Enabled) return "";
 
             bool onTt = m_Dispatch.TryVehicleSchedule(sel, out int lateMin, out int nextMin, out int stage);
+            // Is it STATIONARY at a stop right now? While Boarding, Target is the stop it is sitting at, not the next
+            // one — see the drain's lapServed test ("a bus whose current target is NOT the terminus has left the
+            // terminus"). So the same scheduled minute means "when it departs from here" rather than "when it arrives
+            // there", and an EARLY vehicle at a stop is not drifting, it is being HELD by the mod to keep the
+            // timetable. Reported as "2 min early" while visibly standing still, that reads as a fault; it is the
+            // whole point of the mod. The panel needs the flag to say which of those it is.
+            bool boarding = (EntityManager.GetComponentData<Game.Vehicles.PublicTransport>(sel).m_State
+                             & Game.Vehicles.PublicTransportFlags.Boarding) != 0;
             var sb = new StringBuilder();
             sb.Append("{\"onTt\":").Append(onTt ? "true" : "false")
+              .Append(",\"brd\":").Append(boarding ? "true" : "false")
               .Append(",\"late\":").Append(lateMin)
               .Append(",\"next\":").Append(nextMin)
               .Append(",\"stage\":").Append(stage).Append('}');

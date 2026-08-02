@@ -197,7 +197,7 @@ const RealInfo = ({ raw }: { raw: string }) => {
 const VehicleSchedule = ({ raw }: { raw: string }) => {
     const t = useT();
     if (!raw) return null;
-    let d: { onTt: boolean; late: number; next: number; stage: number };
+    let d: { onTt: boolean; brd?: boolean; late: number; next: number; stage: number };
     try { d = JSON.parse(raw); } catch { return null; }
     if (!d) return null;
 
@@ -217,17 +217,24 @@ const VehicleSchedule = ({ raw }: { raw: string }) => {
         return (h < 10 ? "0" : "") + h + ":" + (mm < 10 ? "0" : "") + mm;
     };
     const vars = { n: Math.abs(late), at: hm(d.next) };
-    const status =
-        late > 0 ? t("vehLate", "Running {n} min late.", vars)
-        : late < 0 ? t("vehEarly", "Running {n} min early.", vars)
-        : t("vehOnTime", "Running on time.", vars);
+    // STATIONARY AT A STOP is a different sentence, not a variant of the same one. While boarding, the scheduled
+    // minute is this stop's DEPARTURE, and an early vehicle is being held here on purpose to keep the timetable.
+    // Saying "running 2 min early" about a vehicle the player can see standing still reads as a fault; it is the
+    // mod working. Reported from a station: "it said the vehicle is x minutes early while sitting in the station".
+    const status = d.brd
+        ? (late < 0 ? t("vehHolding", "Waiting here until {at}, its scheduled departure.", vars)
+           : late > 0 ? t("vehAtStopLate", "At this stop, {n} min behind its {at} departure.", vars)
+           : t("vehAtStop", "At this stop, departing {at}.", vars))
+        : (late > 0 ? t("vehLate", "Running {n} min late.", vars)
+           : late < 0 ? t("vehEarly", "Running {n} min early.", vars)
+           : t("vehOnTime", "Running on time.", vars));
     // Same honesty as the line panel: a line still learning its loop should not present a firm minute.
     const caveat = d.stage < 2
         ? " " + t("vehRefining", "This line is still measuring its real loop, so these times will shift.", vars)
         : "";
     return (
         <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", padding: "4rem 14rem 8rem", lineHeight: 1.35 }}>
-            {status + " " + t("vehNextStop", "Due at its next stop at {at}.", vars) + caveat}
+            {status + (d.brd ? "" : " " + t("vehNextStop", "Due at its next stop at {at}.", vars)) + caveat}
         </div>
     );
 };
