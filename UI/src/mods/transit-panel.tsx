@@ -159,7 +159,7 @@ const WindowRow = ({ label, start$, end$, trigStart, trigEnd }:
 const RealInfo = ({ raw }: { raw: string }) => {
     const t = useT();
     if (!raw) return null;
-    let d: { real: number; est: number; corr: string; meas: boolean; mode: string; n: number; laps?: number; need?: number; stage?: number; need2?: number; wlaps?: number };
+    let d: { real: number; est: number; corr: string; meas: boolean; mode: string; n: number; laps?: number; need?: number; stage?: number; need2?: number; wlaps?: number; rtt?: boolean };
     try { d = JSON.parse(raw); } catch { return null; }
     if (!d || typeof d.real !== "number") return null;
     const vars = { real: d.real, est: d.est, corr: d.corr, n: d.n, laps: d.laps ?? 0, need: d.need ?? 0, need2: d.need2 ?? 0, wlaps: d.wlaps ?? 0 };
@@ -184,9 +184,18 @@ const RealInfo = ({ raw }: { raw: string }) => {
     const caveat = stage === 1
         ? " " + t("countMayRise", "That count is deliberately cautious and may rise once measuring completes.", vars)
         : "";
+    // The measurement exists but nothing is using it. Worth saying plainly and permanently: anyone who ran 0.5.x had
+    // this applied unconditionally, and it is opt-in again as of this version. Without the warning the panel would
+    // quote a real-loop figure the player would reasonably assume was in effect.
+    const rttOff = d.rtt === false
+        ? t("rttOffWarning",
+            "Realistic travel time is OFF, so posted times use the game's estimate rather than this measured loop. Turn it on in the mod's Options to use the measured times.",
+            vars)
+        : "";
     return (
         <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", marginBottom: "6rem", lineHeight: 1.35 }}>
             {head + " " + tail + caveat}
+            {rttOff ? <div style={{ marginTop: "4rem", color: "rgb(232, 168, 96)" }}>{rttOff}</div> : null}
         </div>
     );
 };
@@ -419,7 +428,7 @@ export const TransitButton = () => {
 // dialog silently overwrites, and it delivers over a fire-and-forget event whose listener only exists while the Game
 // screen is mounted — which is exactly when we fire.
 //
-// The opt-out, rendered as dialog CONTENT rather than as the dialog's cancel button — see MigrationNotice for why.
+// The decline, rendered as dialog CONTENT rather than as the dialog's cancel button — see MigrationNotice for why.
 // Closes the dialog itself via DialogContext.onClose, which is the very context the dialog component consumes
 // internally (verified: cs2/ui exports DialogContext as the same object the dialog reads). Calling it directly closes
 // WITHOUT firing onCancel, so this cannot double-answer.
@@ -438,21 +447,23 @@ const NoticeOptOut = () => {
                     color: "white", opacity: 0.75, background: "rgba(90, 100, 115, 0.9)", pointerEvents: "auto",
                 } as any}
             >
-                {t("noticeOff", "Do not let the mod decide")}
+                {t("noticeOff", "Keep them off")}
             </button>
         </div>
     );
 };
 
-// BUTTON MAPPING — this looks odd and is deliberate. The requirement is BOTH that the recommended action is the green
-// one AND that Escape / the X mean "let the mod decide". Those cannot both be met with the dialog's own two buttons:
-// Escape, the X and the cancel button all route to the SAME onCancel handler, and nothing distinguishes them.
+// BUTTON MAPPING — this looks odd and is deliberate. Two requirements have to hold at once: the affirmative action
+// should be the green one, and Escape / the X must NOT switch anything on. Turning provisioning on can raise a line's
+// vehicle count, and no dialog should do that merely by being dismissed. The dialog's own two buttons cannot express
+// that, because Escape, the X and the cancel button all route to the SAME onCancel handler.
 //
-// So the dialog is given only ONE button. `confirm` (green) is "Let the mod decide"; `cancellable={false}` suppresses
-// the red cancel button entirely; and onCancel — which is still what Escape and the X fire — ALSO answers "let the mod
-// decide". The opt-out moves into the dialog's content as our own button, which we control completely.
+// So the dialog is given only ONE button. `confirm` (green) is "Turn them on"; `cancellable={false}` suppresses the red
+// cancel button entirely; and onCancel — what Escape and the X fire — answers FALSE, leaving both settings off. The
+// decline moves into the dialog's content as our own button, which we control completely.
 //
-// Net: green is the recommended action, every dismissal path is the safe one, and opting out takes a deliberate click.
+// Net: green is the affirmative action, every dismissal path leaves the city exactly as it was, and switching the
+// features on takes a deliberate click. This is the mirror image of the v0.5 mapping, for the mirror-image question.
 export const MigrationNotice = () => {
     const seq = useValue(noticeSeq$) as number;
     const stack = useContext(DialogStack);
@@ -463,19 +474,19 @@ export const MigrationNotice = () => {
         _noticeSeen = seq;   // only AFTER we know we can actually raise it
         stack.showDialog(
             <ConfirmationDialog
-                title={t("noticeTitle", "Vehicle counts are changing")}
+                title={t("noticeTitle", "Realistic timings are switched off")}
                 // message MUST be a plain string, despite the ReactNode type. The dialog pipes it through the game's
                 // own text renderer — Children.toArray(msg).flatMap(e => ET(dc(i, e, "\n"))) — which expects strings
                 // and splits paragraphs on "\n". Passing JSX renders the literal text "[div/]" instead of the body.
                 message={[
-                    t("noticeBody", "This version measures each line's real loop and provisions what the timetable actually requires, which means more vehicles than before."),
-                    t("noticeAsk", "Would you rather set vehicle counts yourself?"),
-                    t("noticeWhere", "You can change this at any time in Options, under Vehicle count."),
+                    t("noticeBody", "Until now this mod always measured how long each line's route really takes, and used that for both its posted times and its vehicle counts. Both are separate settings now, and both start switched off, so this city is using the game's own travel estimate."),
+                    t("noticeAsk", "Turn realistic timings back on? Posted times will then match the route, and a line's vehicle count can rise to match."),
+                    t("noticeWhere", "You can change this at any time in Options, under Realism."),
                 ].join("\n")}
-                confirm={t("noticeKeep", "Let the mod decide")}
+                confirm={t("noticeKeep", "Turn them on")}
                 cancellable={false}
                 onConfirm={() => trigger(G, "noticeAnswer", true)}
-                onCancel={() => trigger(G, "noticeAnswer", true)}
+                onCancel={() => trigger(G, "noticeAnswer", false)}
             >
                 <NoticeOptOut />
             </ConfirmationDialog>

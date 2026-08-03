@@ -24,12 +24,12 @@ namespace TransitTimetables
             foreach (var locale in lm.GetSupportedLocales())
                 lm.AddSource(locale, new LocaleEn(ActiveSetting, locale));
             AssetDatabase.global.LoadSettings(nameof(TransitTimetables), ActiveSetting, new TransitTimetablesSetting(this));
-            // Resolve the VehicleCounts sentinel from the legacy bools BEFORE anything can read it, and before the
-            // Options page can render it. Deliberately here and not in OnGameLoadingComplete: that also fires at boot
-            // for the main menu, and a dropdown whose current value matches no visible member renders blank.
+            // Unfold a stored v0.5.x dropdown value back onto the checkbox BEFORE anything can read it. Deliberately
+            // here and not in OnGameLoadingComplete: that also fires at boot for the main menu, where the Options page
+            // could be opened before any city loads. The flush is what clears the consumed dropdown from the .coc.
             if (ActiveSetting.Migrate())
             {
-                log.Info($"[SelfTest] migrated vehicle-count setting -> {ActiveSetting.VehicleCounts}");
+                log.Info($"[SelfTest] migrated vehicle-count setting -> ManageVehicleCount={ActiveSetting.ManageVehicleCount}");
                 SaveSettings();
             }
 
@@ -129,7 +129,12 @@ namespace TransitTimetables
                 { m_S.GetOptionGroupLocaleID(TransitTimetablesSetting.GroupWindows), T("grp.GroupWindows") },
                 { m_S.GetOptionGroupLocaleID(TransitTimetablesSetting.GroupCompat), T("grp.GroupCompat") },
 
+                { m_S.GetOptionGroupLocaleID(TransitTimetablesSetting.GroupRealism), T("grp.GroupRealism") },
                 { m_S.GetOptionGroupLocaleID(TransitTimetablesSetting.GroupStops), T("grp.GroupStops") },
+                { m_S.GetOptionLabelLocaleID(nameof(TransitTimetablesSetting.RealisticTravelTime)), T("opt.RealisticTravelTime.L") },
+                { m_S.GetOptionDescLocaleID(nameof(TransitTimetablesSetting.RealisticTravelTime)), T("opt.RealisticTravelTime.D") },
+                { m_S.GetOptionLabelLocaleID(nameof(TransitTimetablesSetting.ProvisionRealFleet)), T("opt.ProvisionRealFleet.L") },
+                { m_S.GetOptionDescLocaleID(nameof(TransitTimetablesSetting.ProvisionRealFleet)), T("opt.ProvisionRealFleet.D") },
                 { m_S.GetOptionLabelLocaleID(nameof(TransitTimetablesSetting.StopAtEveryStop)), T("opt.StopAtEveryStop.L") },
                 { m_S.GetOptionDescLocaleID(nameof(TransitTimetablesSetting.StopAtEveryStop)), T("opt.StopAtEveryStop.D") },
                 { m_S.GetOptionLabelLocaleID(nameof(TransitTimetablesSetting.MaxDwellRoad)), T("opt.MaxDwellRoad.L") },
@@ -156,12 +161,8 @@ namespace TransitTimetables
                 { m_S.GetOptionGroupLocaleID(TransitTimetablesSetting.GroupGeneral), T("grp.GroupGeneral") },
                 { m_S.GetOptionLabelLocaleID(nameof(TransitTimetablesSetting.Enabled)), T("opt.Enabled.L") },
                 { m_S.GetOptionDescLocaleID(nameof(TransitTimetablesSetting.Enabled)), T("opt.Enabled.D") },
-                { m_S.GetOptionLabelLocaleID(nameof(TransitTimetablesSetting.VehicleCounts)), T("opt.VehicleCounts.L") },
-                { m_S.GetOptionDescLocaleID(nameof(TransitTimetablesSetting.VehicleCounts)), T("opt.VehicleCounts.D") },
-                // Enum MEMBER labels. Unlike option labels these have NO fallback text — a missing key renders the raw
-                // locale id in the dropdown, so all three must be registered. Unset is hidden and never rendered.
-                { m_S.GetEnumValueLocaleID(VehicleCountMode.ModDecides), T("enum.VehicleCounts.ModDecides") },
-                { m_S.GetEnumValueLocaleID(VehicleCountMode.HandsOff), T("enum.VehicleCounts.HandsOff") },
+                { m_S.GetOptionLabelLocaleID(nameof(TransitTimetablesSetting.ManageVehicleCount)), T("opt.ManageVehicleCount.L") },
+                { m_S.GetOptionDescLocaleID(nameof(TransitTimetablesSetting.ManageVehicleCount)), T("opt.ManageVehicleCount.D") },
                 { m_S.GetOptionLabelLocaleID(nameof(TransitTimetablesSetting.CleanUninstall)), T("opt.CleanUninstall.L") },
                 { m_S.GetOptionDescLocaleID(nameof(TransitTimetablesSetting.CleanUninstall)), T("opt.CleanUninstall.D") },
                 // Confirmation-dialog body. Without this the destructive button's [SettingsUIConfirmation] prompt shows

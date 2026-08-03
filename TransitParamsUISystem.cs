@@ -695,7 +695,10 @@ namespace TransitTimetables
                 // too, and that player may have no fleet mod at all — their counts are simply back on vanilla's
                 // automatic sizing, or on whatever they set with the Assigned Vehicles slider.
                 mode = "notmine";
-                n = ScheduleMath.DerivedFleet(dur * (measured ? m_Dispatch.LineCorrection(line, dur, true) : 1f), interval, um);
+                // Mirror the dispatch's own gate: with provisioning off, the count it WOULD apply is the plain
+                // estimate, so quoting the measured-loop figure here would advertise a number the mod is not using.
+                bool prov = s != null && s.ProvisionRealFleet && measured;
+                n = ScheduleMath.DerivedFleet(dur * (prov ? m_Dispatch.LineCorrection(line, dur, true) : 1f), interval, um);
             }
             else if (m_Dispatch.TryPostedFleet(line, out int postedFleet))
             {
@@ -721,6 +724,10 @@ namespace TransitTimetables
               // number is measured when it is still the game's plain estimate.
               .Append(",\"stage\":").Append(m_Dispatch.LineCorrectionStage(line))
               .Append(",\"need2\":").Append(TimetableDispatchSystem.MedianMinSamples)
+              // Is the measured correction actually APPLIED? Both toggles default OFF since 2026-08-03, so a line can
+              // carry a perfectly good measurement that nothing is using. The panel says so, rather than quoting a
+              // real-loop figure the player would reasonably assume is in effect.
+              .Append(",\"rtt\":").Append(s != null && s.RealisticTravelTime ? "true" : "false")
               .Append(",\"wlaps\":").Append(m_Dispatch.LineLoopWindowCount(line))
               .Append(",\"n\":").Append(n).Append('}');
             return sb.ToString();

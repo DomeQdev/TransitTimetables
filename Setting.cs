@@ -15,8 +15,11 @@ namespace TransitTimetables
     {
         public const string Section = "Main";
         public const string GroupWindows = "Peak windows";
-        // GroupRealism ("Realistic travel time") is GONE: both settings that lived in it are gone too — the posted-time
-        // correction is unconditional now, and fleet sizing folded into the VehicleCounts dropdown.
+        // GroupRealism is BACK. Both settings that lived in it were removed in v0.5's coherence pass, making the
+        // measured-loop correction unconditional. Restored 2026-08-03 at the user's request, DEFAULT OFF for both,
+        // which returns the pre-0.5 behaviour: the mod measures the real loop either way and always SHOWS the gap,
+        // but only acts on it when asked. See the notes on each property.
+        public const string GroupRealism = "Realistic travel time";
         public const string GroupStops = "Stops";
         public const string GroupCompat = "Compatibility";
         public const string GroupGeneral = "General";
@@ -34,14 +37,13 @@ namespace TransitTimetables
         public bool Enabled { get; set; } = true;
 
         // ---- Vehicle-count management ----
-        // Who decides how many vehicles a timetabled line runs. This replaced the old "Manage vehicle count" on/off
-        // toggle AND absorbed "Provision fleet": sizing a line from the game's travel ESTIMATE while posting times
-        // measured from its REAL loop is incoherent — it advertises a schedule the line physically cannot keep — so
-        // "the mod decides" always means "sized for the measured loop", and there is no separate toggle for it.
-        //
-        // The departure HOLD is independent of all three values and always runs; with too few vehicles a line simply
-        // runs wider than its set interval.
-        [SettingsUISection(Section, GroupGeneral)]
+        // RETIRED to migration-only, 2026-08-03. This dropdown replaced the pre-0.5 "Manage vehicle count" checkbox
+        // AND absorbed "Provision fleet", on the reasoning that sizing a line from the game's ESTIMATE while posting
+        // times measured from its REAL loop was incoherent. That reasoning is void now that both realism settings are
+        // separate opt-ins again: "manage the count, from the estimate" is a coherent, useful mode and is the one most
+        // players want. So the checkbox is back below, and this field survives ONLY to carry a stored 0.5.x choice
+        // across. It is never shown and never read outside Migrate().
+        [SettingsUIHidden]
         public VehicleCountMode VehicleCounts { get; set; } = VehicleCountMode.Unset;
 
         // ---- Legacy settings, retained ONLY so their stored values can be migrated ----
@@ -50,18 +52,51 @@ namespace TransitTimetables
         // preserving, and a deleted property drops it silently. Changing a shipped property's TYPE is worse than
         // deleting it: Colossal.Json fails Enum.Parse on the old literal, logs a warning, and writes ordinal 0.
         // [SettingsUIHidden] removes them from the Options page while Colossal.Json still serializes and decodes them.
-        // Read once by Migrate() and never again.
-        [SettingsUIHidden]
+
+        // BACK ON THE OPTIONS PAGE as the pre-0.5 checkbox it always was — same name, same type, same default, so a
+        // .coc written by any version decodes straight into it. This is now the live setting again and the dropdown
+        // above is the legacy one; Migrate() below moves the value in that direction.
+        [SettingsUISection(Section, GroupGeneral)]
         public bool ManageVehicleCount { get; set; } = true;
 
-        [SettingsUIHidden]
+        // RESTORED to the Options page (was [SettingsUIHidden] through v0.5.x, when fleet sizing to the measured loop
+        // became unconditional). Default stays false, so an existing .coc already holds the right value and nobody's
+        // stored preference is reinterpreted. This is the setting that SPENDS: a line whose real loop is ~2x its
+        // estimate needs about twice the vehicles and twice the upkeep to hold the same headway.
+        [SettingsUISection(Section, GroupRealism)]
         public bool ProvisionRealFleet { get; set; } = false;
+
+        // RESTORED. Deleted outright in v0.5's coherence pass, so as far as the CODE is concerned this is a new
+        // property — but the stored file is a different matter, and the assumption first written here was wrong.
+        // A real pre-0.5 .coc was found still holding "RealisticTravelTime": true after several 0.5.x releases: the
+        // .coc is a diff against a default instance and is only rewritten when settings are saved, so a key whose
+        // property no longer exists is not purged, it simply sits there unread until something claims it again.
+        // Re-adding the property therefore RESURRECTS the pre-0.5 preference rather than starting from this
+        // initializer. That is the behaviour we want — a returning player keeps what they chose — but it means the
+        // default below only ever applies to someone who never set it pre-0.5, and it is why the realism notice
+        // gates on the VALUES rather than on the presence of the key.
+        //
+        // The v0.4 note explaining why it shipped OFF gave two reasons. The FIRST no longer applies: it warned that
+        // per-stop offsets interleaved measured and estimated values and left the board internally incoherent. Per-stop
+        // measurement has since been deleted and every posted offset now derives from one number, the line loop, via a
+        // single additive ladder. The SECOND still stands — this changes what the whole user base sees — which is why
+        // it stays opt-in rather than becoming the default now that its blocker is gone.
+        [SettingsUISection(Section, GroupRealism)]
+        public bool RealisticTravelTime { get; set; } = false;
 
         // Has the one-time "vehicle counts are changing" notice been answered? Global rather than per-city on purpose:
         // the choice it offers IS global (it sets VehicleCounts), so asking again in the next city would only let a
         // second answer silently overwrite the first. Not shown, and never written until the notice is answered.
         [SettingsUIHidden]
         public bool MigrationNoticeAnswered { get; set; } = false;
+
+        // Has the one-time "realistic timings are switched off" notice been answered? A SECOND flag rather than a reuse
+        // of the one above: everyone who answered the v0.5 vehicle-count notice already has that one set to true, and
+        // they are precisely the players this notice exists for — they ran a version where both realism features were
+        // unconditional and would otherwise lose them silently. Global, not per-city, because the choice it offers is
+        // global. Never written until the notice is actually answered.
+        [SettingsUIHidden]
+        public bool RealismNoticeAnswered { get; set; } = false;
 
         // ---- Clean uninstall ----
         // One-shot button: wipe every trace of the mod from the CURRENT save — revert each line to vanilla (release held
@@ -181,9 +216,10 @@ namespace TransitTimetables
             return start < end ? (hour >= start && hour < end) : (hour >= start || hour < end);
         }
 
-        // True when the MOD is the one sizing lines. Note Unset resolves to false here, which is the safe direction:
-        // if the migration somehow has not run yet, we touch nothing rather than resizing a city on a default.
-        public bool ModSizesFleet => VehicleCounts == VehicleCountMode.ModDecides;
+        // True when the MOD is the one sizing lines. Reads the checkbox directly again. The old note about Unset
+        // resolving to false no longer applies: there is no sentinel in this path, and the checkbox's own default
+        // (true) is the pre-0.5 behaviour — a fresh install manages counts.
+        public bool ModSizesFleet => ManageVehicleCount;
 
         // Resolve the Unset sentinel exactly once, from the two legacy bools. Called from Mod.OnLoad immediately after
         // LoadSettings — NOT from OnGameLoadingComplete, which also fires at boot for the main menu, where an enum whose
@@ -191,17 +227,21 @@ namespace TransitTimetables
         //
         // Returns true when it changed something (the caller then flushes to disk).
         //
-        // Only ManageVehicleCount is consulted. ProvisionRealFleet is deliberately NOT mapped to a mode: there is no
-        // mode meaning "manage counts but size them from the estimate", because that is the incoherent state this
-        // redesign exists to remove. A player who had it off is instead TOLD, once, by the migration notice.
+        // DIRECTION REVERSED 2026-08-03. It used to fold the pre-0.5 checkbox into the dropdown; now it unfolds a
+        // stored dropdown value back onto the checkbox, because the checkbox is the live setting again.
+        //
+        // Runs exactly once per stored value: after importing, the dropdown is reset to the Unset sentinel, and since
+        // the .coc is a DIFF against a default instance whose value is also Unset, the key disappears from the file on
+        // the next save. The caller flushes when this returns true, so that save happens immediately and a later
+        // checkbox change cannot be overwritten by a stale dropdown value on the following load.
+        //
+        // A player who never saw 0.5 has no stored dropdown, so nothing happens and their pre-0.5 checkbox stands.
         public bool Migrate()
         {
-            if (VehicleCounts != VehicleCountMode.Unset)
+            if (VehicleCounts == VehicleCountMode.Unset)
                 return false;
-            // A stored false is a deliberate opt-out (the default is true, and only non-default values are written),
-            // and it is the setting v0.3.5 shipped so a dedicated fleet mod could own the counts. Losing it would
-            // restart exactly the modifier war that release ended.
-            VehicleCounts = ManageVehicleCount ? VehicleCountMode.ModDecides : VehicleCountMode.HandsOff;
+            ManageVehicleCount = VehicleCounts == VehicleCountMode.ModDecides;
+            VehicleCounts = VehicleCountMode.Unset;   // consumed; self-clears from the .coc on the flush below
             return true;
         }
 
@@ -219,6 +259,7 @@ namespace TransitTimetables
             NightStart = 22;
             NightEnd = 6; // keep in lockstep with the initializer above (this runs on an explicit "reset to defaults")
             ProvisionRealFleet = false;
+            RealisticTravelTime = false;
             StopAtEveryStop = false;
             MaxDwellRoad = 3; // keep in lockstep with the initializers above (this runs on "reset to defaults")
             MaxDwellRail = 3;

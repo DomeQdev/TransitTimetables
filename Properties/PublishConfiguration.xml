@@ -9,7 +9,15 @@
 	<LongDescription>
 Turn any public-transport line into a scheduled service. Works for every passenger type: buses, trams, trains, metros, ferries and aircraft.
 
-WHAT'S NEW IN 0.5.2.2:
+WHAT'S NEW IN 0.5.3:
+
+- The realism checkboxes from before 0.5 are back on the Options page, including the one a lot of you were using: let the mod manage vehicle counts, but size them from the game's own estimate instead of the measured loop. High-frequency lines no longer have to be provisioned for their full real loop to be managed.
+- Both realism settings start off. If you had them on before 0.5 they come back on by themselves. If you started during 0.5.x your vehicle counts will fall, and switching "Provision fleet for real travel time" back on restores them.
+- A one-time notice explains this when you load a city with timetables, and can switch both on for you.
+- Posted stop times and vehicle counts are now worked out from the same measurement.
+- Three settings that had only ever been in English are now translated into all 11 languages.
+
+Earlier in 0.5.2.2:
 
 - Select a vehicle to see where it stands against the schedule and when it is due at its next stop. A vehicle held at a stop says it is waiting for its departure rather than reporting it as a delay.
 
@@ -85,7 +93,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-transittimetables-adjust-departure-times-and-frequencies-in-all-types-of-transit-systems.1936039/" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.5.2.2" />
+	<ModVersion Value="0.5.3" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -94,6 +102,18 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
+v0.5.3 [BETA] - The realism toggles are back
+
+- The checkboxes from before 0.5 are on the Options page again: "Manage vehicle count", "Provision fleet for real travel time" and "Realistic travel time". 0.5 folded them into one dropdown, and doing so removed the middle option: let the mod manage vehicle counts, but size them from the game's own estimate rather than the measured loop. That combination is back, so a high-frequency line can be managed without being provisioned for its full real loop.
+
+- Both realism settings start OFF. If you had them switched on before 0.5, that choice is still in your settings file and comes back by itself, so nothing changes for you. If you started using the mod during 0.5.x, where they were always on, your lines will size from the estimate again and your vehicle counts WILL FALL. Switch "Provision fleet for real travel time" back on to keep the 0.5.x behaviour.
+
+- A one-time notice explains this the first time you load a city that has timetables, and can switch both settings on for you. Dismissing it leaves your city exactly as it is.
+
+- FIX: posted stop times and vehicle counts are now worked out from the same measurement. v0.5.1 stopped vehicle counts being thrown off by a mistimed lap, but the posted times were still using the old averaging, so a line could be sized from one figure and timetabled from another.
+
+- Three settings that had only ever appeared in English, including the two stop-time limits, are now translated into all 11 supported languages, along with everything added in 0.5.2.
+
 v0.5.2.2 [BETA] - See how late a vehicle is running
 
 - NEW: select a bus, tram or train on a timetabled line and its info panel tells you where it stands against the schedule. At a stop it says when it departs, and if it is waiting there early it says so plainly rather than calling it a delay, because holding an early vehicle until its departure time is the whole point of a timetable. On the move it gives the next stop's due time, and only claims the vehicle is behind once that time has passed and it still has not arrived. (Requested by ThisGuySucksAtCitys - thank you.)

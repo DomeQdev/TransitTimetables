@@ -343,36 +343,54 @@ namespace TransitTimetables
         //     city first still gets the notice later, when they open the city that actually has timetables.
         private bool ShouldShowMigrationNotice(TransitTimetablesSetting s)
         {
-            if (s.MigrationNoticeAnswered || s.ProvisionRealFleet || !s.ModSizesFleet)
+            // REPURPOSED 2026-08-03, same machinery, opposite migration. v0.5 made both realism features
+            // unconditional and this notice warned that fleets would GROW. They are settings again and both default
+            // OFF, so the silent change now runs the other way: a player who upgrades from 0.5.x loses measured
+            // timings and watches their vehicle counts SHRINK, with nothing on screen to explain it. That is the same
+            // class of surprise the notice was built for, so it asks the mirror-image question.
+            if (s.RealismNoticeAnswered)
                 return false;
+            // Both already on => nothing changed for this player and the dialog would be pure noise.
+            if (s.RealisticTravelTime && s.ProvisionRealFleet)
+                return false;
+            // Deliberately NOT gated on ModSizesFleet, unlike the version this replaces. That gate was right when the
+            // only subject was vehicle counts; realistic travel time also moves the POSTED TIMES, which matter just as
+            // much to a player who lets another mod own the counts.
+            //
+            // m_LineQuery requires TimetableSchedule, a component added only when the player edits a line's timetable
+            // in the panel and never automatically — so this stays the "has actually used the mod" signal it always
+            // was. A city that has never been timetabled is not interrupted.
             return !m_LineQuery.IsEmptyIgnoreFilter;
         }
 
-        // Answer from the dialog. keepManaging=false switches the city to "another mod decides", which is the escape
-        // hatch for a player who does not want the extra vehicles. Either way the question is never asked again.
-        public static void AnswerMigrationNotice(bool keepManaging)
+        // Answer from the dialog. enable=true switches BOTH realism settings on, restoring what a 0.5.x player already
+        // had; enable=false leaves them off, which is the do-nothing answer. Either way the question is never asked
+        // again. Both dismissal paths (Escape, the X) route to FALSE — see the button mapping in transit-panel.tsx —
+        // because turning provisioning on can raise vehicle counts, and no dialog should do that by being dismissed.
+        public static void AnswerMigrationNotice(bool enable)
         {
             NoticeAwaitingAnswer = false;
             TransitTimetablesSetting s = Mod.ActiveSetting;
             if (s == null)
                 return;
-            if (!keepManaging)
+            if (enable)
             {
-                s.VehicleCounts = VehicleCountMode.HandsOff;
-                // Force a heal sweep on the next tick. WITHOUT THIS the opt-out silently leaves the previous version's
-                // VehicleInterval residue pinned on every line and freezes it into the save — the issue-#7 class of bug.
-                // The two paths that would normally clean up both miss, for the same reason:
-                //  - the per-line hand-back is gated on m_LastFleet, and the notice suppressed every write that
-                //    populates it, so m_LastFleet is still EMPTY at the moment the answer arrives;
-                //  - GlobalHealUnbunching already ran earlier in the same tick and skipped exactly these lines,
-                //    because ModSizesFleet was still true when it computed `managed`.
-                // Re-running it now is correct and cheap: ModSizesFleet is false from here on, so `managed` is false
-                // and every timetabled line gets TryHealLeftoverFleetModifier. The sweep is idempotent.
+                s.RealisticTravelTime = true;
+                s.ProvisionRealFleet = true;
+            }
+            else
+            {
+                // Force a heal sweep on the next tick. Declining leaves provisioning off, and for anyone arriving from
+                // 0.5.x that means their lines still carry the inflated counts the old unconditional provisioning
+                // wrote. The per-line path normally corrects that on the next write — but under "another mod decides"
+                // there IS no next write, so the 0.5.x residue would sit pinned on every line and freeze into the save
+                // (the issue-#7 class of bug). The sweep is idempotent and cheap, so it runs regardless of mode rather
+                // than trying to detect that case.
                 s_healRequest = true;
             }
-            s.MigrationNoticeAnswered = true;
+            s.RealismNoticeAnswered = true;
             Mod.SaveSettings();
-            Mod.log.Info($"[SelfTest] migration notice answered: keepManaging={keepManaging} mode={s.VehicleCounts}");
+            Mod.log.Info($"[SelfTest] realism notice answered: enable={enable} rtt={s.RealisticTravelTime} prov={s.ProvisionRealFleet}");
         }
 
         // A save (or a new game) just finished loading: schedule the one-time global unbunching heal for the next tick,
@@ -419,7 +437,7 @@ namespace TransitTimetables
                     NoticeAwaitingAnswer = true;
                     m_NoticeTimeout = kNoticeAnswerTimeoutTicks;
                     TransitParamsUISystem.RaiseMigrationNotice();
-                    Mod.log.Info("[SelfTest] migration notice raised (existing city, fleet sizing changes)");
+                    Mod.log.Info("[SelfTest] realism notice raised (timetabled city, realism settings are off)");
                 }
             }
             // Bounded wait for the answer (see kNoticeAnswerTimeoutTicks). Deliberately does NOT mark the notice as
@@ -624,7 +642,16 @@ namespace TransitTimetables
                         // SATURATES at its 2.6x cap for any stop density above ~0.195 — which a normal city line
                         // exceeds. A freshly drawn line would therefore be provisioned at a flat 2.6x on a guess,
                         // before a single lap had been timed. Until the line has laps, use the plain estimate.
-                        bool measuredNow = LineCorrectionMeasured(line);
+                        // GATED on "Provision fleet for real travel time" again (restored 2026-08-03, default OFF).
+                        // With it off the line is sized from the game's plain estimate, exactly as before v0.5 made
+                        // this unconditional. The measurement still runs and the panel still SHOWS the gap, so the
+                        // player can see what the real loop would cost before choosing to pay for it.
+                        // TWO SEPARATE QUESTIONS, and collapsing them into one breaks the estimate-only mode.
+                        //   haveMeasurement - does this line have a live measured loop at all?
+                        //   measuredNow     - are we ALLOWED to size from it, i.e. has the player opted in?
+                        // The cliff guard below keys on the FIRST; the fleet math keys on the second.
+                        bool haveMeasurement = LineCorrectionMeasured(line);
+                        bool measuredNow = s.ProvisionRealFleet && haveMeasurement;
                         float fleetUnits = measuredNow
                             ? durUnits * LineCorrection(line, durUnits, forFleet: true) : durUnits;
                         desiredFleet = ScheduleMath.DerivedFleet(fleetUnits, interval, m_Um);
@@ -636,7 +663,16 @@ namespace TransitTimetables
                         // The line would retire eleven buses and buy them all back a few laps later: exactly the
                         // odometer-driven yo-yo the fleet notes warn about. A line we have already sized keeps its
                         // count until it has re-measured; only a line we have never sized falls back to the estimate.
-                        if (!measuredNow && m_LastFleet.TryGetValue(line, out int measHold))
+                        //
+                        // KEYED ON haveMeasurement, NOT ON measuredNow. Keying it on measuredNow was correct only while
+                        // provisioning was unconditional, because then the two were the same thing and losing the status
+                        // was always TRANSIENT. With the opt-in setting restored, measuredNow is false on every line on
+                        // every tick whenever the player has provisioning off — which turned this transient guard into a
+                        // permanent latch: the line took whatever count it was first given and froze there, ignoring
+                        // every peak/off-peak/night boundary, headway edit and route edit for the rest of the session.
+                        // That silently destroyed the whole point of the estimate-only mode. The setting decides which
+                        // NUMBER to size to; it must never decide whether to size at all.
+                        if (s.ProvisionRealFleet && !haveMeasurement && m_LastFleet.TryGetValue(line, out int measHold))
                             desiredFleet = measHold;
                         // Hard sanity cap on EVERY path. It was once gated behind the old opt-in toggle (the correction
                         // being the only assumed source of a bad number), which left the DEFAULT estimate path uncapped —
@@ -1128,14 +1164,17 @@ namespace TransitTimetables
                     .Append(" now=").Append(nowMin).Append("m int=").Append(interval).Append("m stops:")
                 : null;
 
-            // Correcting posted times to the measured loop is UNCONDITIONAL — the "Realistic travel time" toggle is gone
-            // (see Setting.cs). The only gate left is LineCorrectionMeasured below: until the line has timed real laps
-            // the ladder is inert and posts the raw estimate, exactly as before.
+            // Correcting posted times to the measured loop is GATED on "Realistic travel time" again (restored
+            // 2026-08-03, default OFF). With it off the ladder is inert and the board posts the raw estimate, which is
+            // also what happens on any line that has not yet timed real laps (LineCorrectionMeasured below).
 
             // ===== THE LADDER: every posted offset derives from ONE measured number, the line's LOOP. =====
-            // Per-stop measurement is gone (see the field block). What remains is reliable: m_LineLoopEma is measured
-            // once per lap, persisted with the city, and trusted on load. We know the line's REAL total time but not
-            // how it distributes, so we use the estimate for the SHAPE and the measurement for the SCALE.
+            // Per-stop measurement is gone (see the field block). What remains is reliable: the loop is measured once
+            // per lap, persisted with the city, and trusted on load. We know the line's REAL total time but not how it
+            // distributes, so we use the estimate for the SHAPE and the measurement for the SCALE.
+            //
+            // The scale comes from TryMeasuredLoopFrames, the same ladder that sizes the fleet, so a line's posted
+            // times and its vehicle count can never again be derived from two different estimators.
             //
             // ADDITIVE, NOT MULTIPLICATIVE — this is the whole design and reversing it reintroduces a reverted bug.
             // Multiplying each stop's estimate by the correction gives until = est*(corr - localRatio), which is
@@ -1160,8 +1199,8 @@ namespace TransitTimetables
             }
             float perStopExtraMin = 0f;   // additive ladder step (minutes), 0 = post the raw estimate
             float shrinkScale = 1f;       // multiplicative path, used only when the line beats its estimate
-            if (LineCorrectionMeasured(line)
-                && m_LineLoopEma.TryGetValue(line, out float loopFrames) && m_Fpm > 0.01f && estTotalUnits > 0.01f)
+            if (s.RealisticTravelTime && TryMeasuredLoopFrames(line, out float loopFrames)
+                && m_Fpm > 0.01f && estTotalUnits > 0.01f)
             {
                 float estLoopMin = estTotalUnits * m_Um;
                 float realLoopMin = loopFrames / m_Fpm;
@@ -1934,6 +1973,38 @@ namespace TransitTimetables
         // density prior — used by the panel to label the real-loop figure "measured" vs "estimated".
         public bool LineCorrectionMeasured(Entity line)
             => m_LineLoopSamples.TryGetValue(line, out int n) && n >= kMinTrustSamples;
+
+        // The measured loop in FRAMES, down the SAME ladder LineCorrection walks: window median once there are enough
+        // samples for a median to mean anything, the conservative anchor before that, nothing at all below the trust
+        // threshold.
+        //
+        // This exists because the two consumers of the measurement had drifted apart. LineCorrection was moved off the
+        // EMA and onto min/median when a 50-stop subway asked for 117 vehicles — a missed terminus pass makes a span a
+        // MULTIPLE of the real loop, so the EMA of every accepted span sits permanently ABOVE the truth. The
+        // departure-offset ladder below kept reading m_LineLoopEma directly, so a line was being SIZED from the clean
+        // median while its posted times were being stretched by the contaminated average. Same measurement, two
+        // answers, and the offsets were the wrong one: an inflated loop spreads a larger excess across the stops and
+        // holds vehicles longer at each than the route actually warrants.
+        //
+        // The EMA is still maintained — the [SelfTest] laptime line reports it next to the anchor and the median, which
+        // is how the divergence was visible in the first place — but nothing derives behaviour from it any more.
+        public bool TryMeasuredLoopFrames(Entity line, out float frames)
+        {
+            frames = 0f;
+            if (!m_LineLoopSamples.TryGetValue(line, out int n) || n < kMinTrustSamples)
+                return false;
+            if (n >= kMedianMinSample && m_LineLoopMedian.TryGetValue(line, out float med) && med > 0f)
+            {
+                frames = med;
+                return true;
+            }
+            if (m_LineLoopMin.TryGetValue(line, out float min) && min > 0f)
+            {
+                frames = min;
+                return true;
+            }
+            return false;
+        }
 
         // Lap-timing progress for the panel: how many clean loops this line has contributed so far, and how many it
         // needs before the measured correction takes over from the cold-start estimate. Exposed so the player can see
