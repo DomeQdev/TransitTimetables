@@ -276,6 +276,11 @@ namespace TransitTimetables
         // to disagree with the vehicles by ~45 minutes. Safe to share without locking: the UI phase runs BEFORE the
         // simulation phase each frame, so the UI always reads the last COMPLETED dispatch tick.
         private readonly Dictionary<Entity, int>    m_PostedOffset = new Dictionary<Entity, int>();    // waypoint -> posted minutes
+        // The layover stop's pre-layover ARRIVAL offset (minutes). Only the layover waypoint gets an entry — everywhere
+        // else arrival == departure and m_PostedOffset is the single number. Published so the board's "arrives" row
+        // reads the SAME walk the vehicles are held to; deriving departure-minus-X in the UI would be the second
+        // independent derivation that once put the board ~45 minutes from the buses.
+        private readonly Dictionary<Entity, int>    m_PostedArrival = new Dictionary<Entity, int>();   // layover waypoint -> arrival minutes
         // Same contract for the vehicle count: the panel shows the number the dispatch SETTLED on, after the cap, the
         // shrink hysteresis and the stability gate. Recomputing it in the UI (as it did) skipped all three, so the
         // panel could advertise a count the dispatch was actively refusing to apply.
@@ -654,6 +659,17 @@ namespace TransitTimetables
                         bool measuredNow = s.ProvisionRealFleet && haveMeasurement;
                         float fleetUnits = measuredNow
                             ? durUnits * LineCorrection(line, durUnits, forFleet: true) : durUnits;
+                        // SCHEDULED LAYOVER ("Terminus B"): the cycle genuinely IS X minutes longer, so holding the
+                        // same headway needs ~ceil(X/headway) more vehicles — added HERE, as minutes at the call site,
+                        // and deliberately NOWHERE upstream. The measured loop must never contain X (a layover is a
+                        // chosen wait, not the route getting slower — the m_VehStopHold banking subtracts it), and
+                        // ComputeStableDuration must never contain X (vanilla divides by that duration to derive the
+                        // count, so inflating it yields FEWER vehicles — exactly backwards). Gated on ProvisionRealFleet
+                        // by the author's decision: with provisioning off the layover is invisible to the fleet math,
+                        // accepted cost being occasional missed departures at A on a tightly-provisioned line.
+                        if (s.ProvisionRealFleet && m_Um > 0.01f
+                            && TryActiveLayover(line, sch, out _, out _, out int layFleetMin))
+                            fleetUnits += layFleetMin / m_Um;
                         desiredFleet = ScheduleMath.DerivedFleet(fleetUnits, interval, m_Um);
                         // MEASUREMENT CLIFF GUARD. Sizing is all-or-nothing on measuredNow, and a line can LOSE that
                         // status mid-life: AcceptLoopSample re-anchors on a run of long samples (a route edit, or a
@@ -766,6 +782,13 @@ namespace TransitTimetables
                 // (3) terminus = timing point + retirement anchor (player-chosen stop, or the first stop)
                 FindTerminus(line, sch, out Entity terminusStop, out Entity terminusWaypoint);
 
+                // (3+) scheduled layover ("Terminus B"), when set and still usable (see TryActiveLayover). Resolved
+                // once per tick and threaded through: ForceStops must pull vehicles into it even with no demand
+                // (an empty stop is otherwise rolled past and never enters Boarding, so X would silently do nothing),
+                // and HoldAllStops folds X into the offset walk at and after the stop.
+                bool hasLayover = TryActiveLayover(line, sch, out Entity layoverStop, out Entity layoverWaypoint, out int layoverMinutes);
+                if (!hasLayover) { layoverStop = Entity.Null; layoverWaypoint = Entity.Null; layoverMinutes = 0; }
+
                 // Accumulate this line's measured loop time from terminus front-vehicle changes (feeds LineCorrection).
                 MeasureLap(line, terminusStop, frame, durUnits);
                 // Persist the freshly-updated measurement into the line's component so it survives save/load (no-op until
@@ -776,7 +799,7 @@ namespace TransitTimetables
                 // where nobody boards or alights — ALWAYS at the terminus (skipping it strands the whole schedule), and
                 // at every stop when the player opts in. A skipped stop never enters Boarding, so the hold below can't
                 // touch it and the bus rolls on early. See ForceStops.
-                int forcedStops = ForceStops(line, terminusWaypoint, s.StopAtEveryStop);
+                int forcedStops = ForceStops(line, terminusWaypoint, layoverWaypoint, s.StopAtEveryStop);
 
                 // (3a) FULL TIMETABLE: hold EACH stop's boarding bus to that stop's scheduled departure — the terminus
                 // schedule shifted by the stop's cumulative offset from the terminus (offset 0 at the terminus).
@@ -825,7 +848,7 @@ namespace TransitTimetables
                                  $"rej={rej} stops={CountStops(line)} n={loopN} compat={(s.RealisticTripsCompat ? 1 : 0)}");
                 }
 
-                HoldAllStops(line, s, sch, customSch, sched, terminusStop, terminusWaypoint, frame, nowMin, curInterval, diagLog);
+                HoldAllStops(line, s, sch, customSch, sched, terminusStop, terminusWaypoint, layoverStop, layoverMinutes, frame, nowMin, curInterval, diagLog);
 
                 // (3b) SLOT-COUPLED DRAIN: shed surplus buses at the terminus WITHOUT skipping departures.
                 //
@@ -1089,6 +1112,12 @@ namespace TransitTimetables
                 foreach (Entity wpKey in m_PostedOffset.Keys)
                     if (!EntityManager.Exists(wpKey)) m_StaleScratch.Add(wpKey);
                 for (int i = 0; i < m_StaleScratch.Count; i++) m_PostedOffset.Remove(m_StaleScratch[i]);
+                // The arrival sibling is waypoint-keyed too; same staleness rule. (A moved/cleared layover is already
+                // self-cleaned by the walk's Remove — this catches waypoints deleted outright between walks.)
+                m_StaleScratch.Clear();
+                foreach (Entity wpKey in m_PostedArrival.Keys)
+                    if (!EntityManager.Exists(wpKey)) m_StaleScratch.Add(wpKey);
+                for (int i = 0; i < m_StaleScratch.Count; i++) m_PostedArrival.Remove(m_StaleScratch[i]);
             }
 
             lines.Dispose();
@@ -1105,7 +1134,7 @@ namespace TransitTimetables
         // stop, 60-frame units) -> schedule minutes. Segment i is the leg from waypoint i to waypoint i+1, and the
         // dwell term mirrors HourlyFleetSystem.ComputeStableDuration / the UI board so posted and held times agree.
         private void HoldAllStops(Entity line, TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int sched, Entity terminusStop,
-            Entity terminusWaypoint, uint frame, int nowMin, int interval, bool diagLog)
+            Entity terminusWaypoint, Entity layoverStop, int layoverMinutes, uint frame, int nowMin, int interval, bool diagLog)
         {
             // Outside the line's operating window (day-only at night, night-only by day, or a degenerate EMPTY window
             // like NightStart==NightEnd) -> don't hold or force-depart anything; let it run vanilla headway instead of
@@ -1228,15 +1257,35 @@ namespace TransitTimetables
             // maximum, so one bad value corrupts the whole route suffix). The ladder above replaces both: one measured
             // number per line, the estimate only for shape, and the residual forced back to zero at the terminus.
             float offUnits = 0f;
+            // SCHEDULED LAYOVER ("Terminus B") accumulator: 0 for every stop before B, X at B and at every stop after,
+            // back to the grid (+0) at the terminus because the walk restarts there. ADDED AS ITS OWN MINUTES TERM,
+            // never folded into offUnits — offUnits is multiplied by shrinkScale below, so a player-set layover would
+            // silently shrink whenever the line beats its estimate. Incremented at the TOP of B's iteration so B's own
+            // posted offset is its DEPARTURE (scheduled arrival + X): that is what makes the wait absorb delay — a
+            // vehicle arriving d minutes late waits only X-d, and one more than X late leaves as soon as boarding is
+            // done, because its target (slot + offMin) is anchored to the schedule, not to its actual arrival.
+            int layoverCarry = 0;
             for (int j = 0; j < len; j++)
             {
                 int wpIdx = start + j; if (wpIdx >= len) wpIdx -= len;
                 Entity wp = wps[wpIdx].m_Waypoint;
+                // Resolve the stop FIRST (it used to be resolved further down): the layover test needs it before the
+                // offset is computed, and the boarding block below reuses it unchanged.
+                Entity stop = EntityManager.HasComponent<Connected>(wp)
+                    ? EntityManager.GetComponentData<Connected>(wp).m_Connected : Entity.Null;
+                int layAtThis = (layoverStop != Entity.Null && stop == layoverStop) ? layoverMinutes : 0;
                 // The ladder: the estimate's SHAPE, lifted onto the measured SCALE. With no trusted measurement both
                 // terms are inert (perStopExtraMin 0, shrinkScale 1) and this is byte-identical to the raw estimate.
-                int offMin = (int)System.Math.Round(offUnits * m_Um * shrinkScale + timedPassed * perStopExtraMin);
-                if (offMin < 0) offMin = 0;                                 // terminus is j==0 -> 0; never post negative
+                int offArr = (int)System.Math.Round(offUnits * m_Um * shrinkScale + timedPassed * perStopExtraMin) + layoverCarry;
+                if (offArr < 0) offArr = 0;                                 // terminus is j==0 -> 0; never post negative
+                layoverCarry += layAtThis;
+                int offMin = offArr + layAtThis;                            // departure: arrival + this stop's own layover
                 m_PostedOffset[wp] = offMin;                                // PUBLISH: the board reads this, never its own
+                // The layover stop is the ONE place arrival and departure differ; publish its arrival too, from this
+                // same walk, so the board's "arrives" row can never drift from what the vehicles are held to. The
+                // Remove keeps a moved/cleared layover from leaving a stale arrival behind (self-cleans in one walk).
+                if (layAtThis > 0) m_PostedArrival[wp] = offArr;
+                else m_PostedArrival.Remove(wp);
                 // NO MONOTONIC FLOOR HERE — one was added in v0.4.1 and REMOVED again; do not put it back.
                 // The intent was sound (a later stop cannot legitimately be posted earlier than an earlier one), but a
                 // floor is a RUNNING MAXIMUM: a single stop with a badly inflated measured value propagates that value
@@ -1248,21 +1297,17 @@ namespace TransitTimetables
                 // terms are non-negative multipliers of an increasing count). A floor would now be dead weight that
                 // could only do harm.
                 bool boarding = false;
-                if (EntityManager.HasComponent<Connected>(wp))
+                if (stop != Entity.Null && EntityManager.HasComponent<BoardingVehicle>(stop))
                 {
-                    Entity stop = EntityManager.GetComponentData<Connected>(wp).m_Connected;
-                    if (stop != Entity.Null && EntityManager.HasComponent<BoardingVehicle>(stop))
-                    {
-                        boarding = true;
-                        Entity bveh = EntityManager.GetComponentData<BoardingVehicle>(stop).m_Vehicle;
-                        // Stamp the arrival frame for our own boarding bus. The drain stamps it too, but one tick LATER,
-                        // and HoldStop's min-dwell branch needs it on the FIRST boarding tick.
-                        if (bveh != Entity.Null && (lineVehicles == null || lineVehicles.Contains(bveh))
-                            && !m_ArrivedFrame.ContainsKey(bveh))
-                            m_ArrivedFrame[bveh] = frame;
-                        if (inService)
-                            HoldStop(s, sch, customSch, sched, line, stop, frame, nowMin, offMin, stop == terminusStop, lineVehicles, lapServed, diag);
-                    }
+                    boarding = true;
+                    Entity bveh = EntityManager.GetComponentData<BoardingVehicle>(stop).m_Vehicle;
+                    // Stamp the arrival frame for our own boarding bus. The drain stamps it too, but one tick LATER,
+                    // and HoldStop's min-dwell branch needs it on the FIRST boarding tick.
+                    if (bveh != Entity.Null && (lineVehicles == null || lineVehicles.Contains(bveh))
+                        && !m_ArrivedFrame.ContainsKey(bveh))
+                        m_ArrivedFrame[bveh] = frame;
+                    if (inService)
+                        HoldStop(s, sch, customSch, sched, line, stop, frame, nowMin, offMin, stop == terminusStop, layAtThis, lineVehicles, lapServed, diag);
                 }
                 if (diag != null && !boarding)
                     diag.Append(" [").Append(j).Append(":off").Append(offMin).Append(']');
@@ -1291,7 +1336,7 @@ namespace TransitTimetables
         // frame < m_DepartureFrame the boarding vehicle stays), not just the terminus.
         // When diag != null, appends this stop's decision (or skip reason) to the route's [SelfTest] dump.
         private void HoldStop(TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int sched, Entity line, Entity stop, uint frame, int nowMin,
-            int offMin, bool isTerminus, HashSet<Entity> lineVehicles, HashSet<Entity> lapServed, System.Text.StringBuilder diag)
+            int offMin, bool isTerminus, int layoverAtStop, HashSet<Entity> lineVehicles, HashSet<Entity> lapServed, System.Text.StringBuilder diag)
         {
             string tag = isTerminus ? "T" : "";
             Entity veh = EntityManager.GetComponentData<BoardingVehicle>(stop).m_Vehicle;
@@ -1493,12 +1538,18 @@ namespace TransitTimetables
             // freeze at an intermediate kerb with passengers aboard — exactly the v0.2.1 bug, re-entered through the
             // front door. The cap bounds the worst case while still covering legitimate far-stop holds.
             // The terminus keeps the strict one-headway bound: its offset is 0 and its slot is grid-derived.
-            int holdBound = isTerminus ? maxInterval : maxInterval + System.Math.Min(offMin, kMaxHoldSlackMinutes);
+            // The layover stop's own X is a LEGITIMATE wait on top of the structural bound — an on-time vehicle there
+            // holds for X plus its earliness by design — so it gets its own bound term rather than competing with the
+            // slack cap. The travel part of the slack is offMin MINUS the layover (offMin at that stop includes X).
+            int holdBound = isTerminus ? maxInterval
+                : maxInterval + System.Math.Min(offMin - layoverAtStop, kMaxHoldSlackMinutes) + layoverAtStop;
             bool overrun = until > holdBound;
             bool hold = dframes > 0 && !overrun;
             // WARN threshold deliberately left at the OLD bound so residual shape error stays visible in the log even
             // once releases stop: a run of these at early stops means the additive ladder is wrong for that line.
-            if (until > maxInterval && frame - m_LastClampWarn >= 16384u)
+            // The layover term is exempted, or a working layover longer than one headway would log "residual shape
+            // error" on every single visit — a false alarm on the feature's normal path.
+            if (until > maxInterval + layoverAtStop && frame - m_LastClampWarn >= 16384u)
             {
                 m_LastClampWarn = frame;
                 Mod.log.Warn($"[SelfTest] long hold: until={until}m exceeds headway={maxInterval}m at off={offMin} " +
@@ -1618,7 +1669,7 @@ namespace TransitTimetables
         // stop the game genuinely wants. Scoped to THIS line's own RouteVehicles, so buses of other lines sharing a stop
         // are untouched. (The write also lands on any non-road vehicle on the line, but it is inert there — only
         // TransportCarAISystem reads RequireStop for the skip; trains/ships/planes never skip.) Returns count forced (diag).
-        private int ForceStops(Entity line, Entity terminusWaypoint, bool everyStop)
+        private int ForceStops(Entity line, Entity terminusWaypoint, Entity layoverWaypoint, bool everyStop)
         {
             if (!EntityManager.HasBuffer<RouteVehicle>(line))
                 return 0;
@@ -1639,7 +1690,13 @@ namespace TransitTimetables
                 bool approachingTerminus = terminusWaypoint != Entity.Null
                     && EntityManager.HasComponent<Target>(veh)
                     && EntityManager.GetComponentData<Target>(veh).m_Target == terminusWaypoint;
-                if (!(everyStop || approachingTerminus))
+                // The layover stop ("Terminus B") is forced for the same reason the terminus is: with no boarding
+                // demand vanilla rolls past it, the vehicle never enters Boarding, and the scheduled layover silently
+                // does not happen. Marking a stop as the layover IS the player asking every vehicle to call there.
+                bool approachingLayover = layoverWaypoint != Entity.Null
+                    && EntityManager.HasComponent<Target>(veh)
+                    && EntityManager.GetComponentData<Target>(veh).m_Target == layoverWaypoint;
+                if (!(everyStop || approachingTerminus || approachingLayover))
                     continue;
                 forced++;
                 if ((pt.m_State & PublicTransportFlags.RequireStop) == 0)
@@ -1736,6 +1793,7 @@ namespace TransitTimetables
                 ecb.RemoveComponent<TimetableSchedule>(line);
                 if (EntityManager.HasComponent<CustomPeakSchedule>(line)) ecb.RemoveComponent<CustomPeakSchedule>(line);
                 if (EntityManager.HasComponent<LineMeasuredTravel>(line)) ecb.RemoveComponent<LineMeasuredTravel>(line);
+                if (EntityManager.HasComponent<LineLayover>(line)) ecb.RemoveComponent<LineLayover>(line);
                 n++;
             }
             ecb.Playback(EntityManager);
@@ -1746,7 +1804,7 @@ namespace TransitTimetables
             m_LineLoopEma.Clear(); m_LineLoopSamples.Clear(); m_LineLoopMin.Clear(); m_LineRejectStreak.Clear();
             m_LastDur.Clear(); m_DurStable.Clear(); m_LastSlotFrame.Clear(); m_ShrinkSince.Clear(); m_RampSince.Clear();
             m_RunSlotFrame.Clear(); m_ArrivedFrame.Clear(); m_VehTerminusDepart.Clear(); m_Committed.Clear();
-            m_VehStopHold.Clear(); m_VehHoldFrames.Clear(); m_PostedOffset.Clear(); m_PostedFleet.Clear();
+            m_VehStopHold.Clear(); m_VehHoldFrames.Clear(); m_PostedOffset.Clear(); m_PostedArrival.Clear(); m_PostedFleet.Clear();
             Mod.log.Info($"[SelfTest] clean uninstall: reverted {n} line(s) to vanilla and removed all mod components. " +
                          "Save your city; the mod can now be removed with no residue.");
         }
@@ -2102,6 +2160,11 @@ namespace TransitTimetables
         public bool TryPostedOffsetMinutes(Entity wp, out int minutes)
             => m_PostedOffset.TryGetValue(wp, out minutes);
 
+        // The layover stop's pre-layover ARRIVAL offset — set only for the active layover waypoint, where arrival and
+        // departure differ. Same walk, same tick as the posted offset above; never derived in the UI.
+        public bool TryPostedArrivalMinutes(Entity wp, out int minutes)
+            => m_PostedArrival.TryGetValue(wp, out minutes);
+
         // The vehicle count the dispatch settled on for this line, after the cap, the shrink hysteresis and the
         // stability gate. False => the mod is not sizing this line (count management off, line disabled, or the
         // duration estimate has never been usable), and the panel shows the plain estimate instead.
@@ -2145,6 +2208,58 @@ namespace TransitTimetables
                     return;
                 }
             }
+        }
+
+        // Resolve this line's layover ("Terminus B") to a usable (stop, waypoint, minutes) triple. False when there is
+        // nothing usable: no component, zero minutes, the stop deleted or no longer boardable / on the route — the same
+        // silent-fallback validity rules FindTerminus applies to the terminus itself — or the stop IS the effective
+        // terminus. That last one matters: HoldStop branches on stop == terminusStop, and the terminus branch never
+        // reads offMin, so a layover landing on the terminus would be silently dropped by the dispatch while the board
+        // kept printing it. It can happen without player error: delete the explicit terminus and the first-boarding-stop
+        // fallback can land ON the layover stop. Dropping the layover is the honest resolution — terminus wins.
+        private bool TryActiveLayover(Entity line, TimetableSchedule sch, out Entity stop, out Entity waypoint, out int minutes)
+        {
+            stop = Entity.Null;
+            waypoint = Entity.Null;
+            minutes = 0;
+            if (!EntityManager.HasComponent<LineLayover>(line))
+                return false;
+            LineLayover lay = EntityManager.GetComponentData<LineLayover>(line);
+            if (lay.m_HoldMinutes == 0 || lay.m_Stop == Entity.Null || !EntityManager.Exists(lay.m_Stop)
+                || !EntityManager.HasComponent<BoardingVehicle>(lay.m_Stop))
+                return false;
+            if (!EntityManager.HasBuffer<RouteWaypoint>(line))
+                return false;
+            DynamicBuffer<RouteWaypoint> waypoints = EntityManager.GetBuffer<RouteWaypoint>(line, isReadOnly: true);
+            Entity wp = Entity.Null;
+            for (int j = 0; j < waypoints.Length; j++)
+            {
+                Entity w = waypoints[j].m_Waypoint;
+                if (EntityManager.HasComponent<Connected>(w)
+                    && EntityManager.GetComponentData<Connected>(w).m_Connected == lay.m_Stop)
+                { wp = w; break; }
+            }
+            if (wp == Entity.Null)
+                return false;                                       // stop no longer on this route
+            FindTerminus(line, sch, out Entity termStop, out _);
+            if (termStop == lay.m_Stop)
+                return false;                                       // B == effective terminus: terminus wins
+            stop = lay.m_Stop;
+            waypoint = wp;
+            minutes = lay.m_HoldMinutes;
+            return true;
+        }
+
+        // UI-facing overload (the board's "layover" row and the fleet advisories): reads the schedule itself, applies
+        // the SAME validity rules the dispatch uses, so the panel can never advertise a layover the dispatch dropped.
+        public bool TryActiveLayover(Entity line, out Entity stop, out int minutes)
+        {
+            stop = Entity.Null;
+            minutes = 0;
+            if (!EntityManager.HasComponent<TimetableSchedule>(line))
+                return false;
+            TimetableSchedule sch = EntityManager.GetComponentData<TimetableSchedule>(line);
+            return TryActiveLayover(line, sch, out stop, out _, out minutes);
         }
 
         // ONE-TIME-PER-LOAD global repair of the unbunching residue an OLD version (before v0.2.3) of this mod left in

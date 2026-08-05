@@ -372,7 +372,7 @@ export const TimetableEditor = () => {
 const StopBoard = () => {
     const raw = useValue(selStopBoard$) as string;
     const t = useT();
-    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; est?: boolean; d: string }> = [];
+    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; est?: boolean; lay?: number; a?: string; d: string }> = [];
     try { board = JSON.parse(raw || "[]"); } catch { board = []; }
     const ttCount = board.filter((e) => e.tt).length;
     const termBtn = {
@@ -389,7 +389,15 @@ const StopBoard = () => {
                         <div style={{ display: "flex", alignItems: "center", fontSize: "13rem", fontWeight: "bold" }}>
                             <div style={{ flex: 1 }}>{e.nm ? e.nm : t("line", "Line {n}", { n: e.n })}</div>
                             {e.term ? <div style={{ fontSize: "11rem", color: "rgb(120, 210, 130)" }}>★ {t("terminusBadge", "terminus")}</div> : null}
+                            {e.lay ? <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)" }}>⏸ {t("layoverBadge", "layover stop")}</div> : null}
                         </div>
+                        {/* At the layover stop arrival and departure are the ONE place they differ: show both rows,
+                            arrivals first, both fed by C# from the same dispatch walk (never derived here). */}
+                        {e.tt && e.lay && e.a ? (
+                            <div style={{ fontSize: "12rem", color: "rgba(255,255,255,0.6)" }}>
+                                {t("arrives", "arrives: {d}", { d: e.a })}
+                            </div>
+                        ) : null}
                         <div style={{ fontSize: "12rem", color: e.tt ? "rgb(120, 210, 130)" : "rgba(255,255,255,0.45)" }}>
                             {e.tt ? (e.d ? t("departs", "departs: {d}", { d: e.d }) : t("noDepartures", "no departures scheduled")) : t("notTimetabled", "not timetabled")}
                         </div>
@@ -398,13 +406,47 @@ const StopBoard = () => {
                         {e.tt && e.est && e.d ? (
                             <div style={{ fontSize: "11rem", opacity: 0.45 }}>{t("estimatedTimes", "estimated, not yet measured")}</div>
                         ) : null}
+                        {/* The layover stepper: same ±1/±10 idiom as every other numeric control, absolute value sent.
+                            Stepping down to 0 clears the layover (the component is removed), same meaning as remove. */}
+                        {e.tt && e.lay ? (
+                            <div style={{ display: "flex", alignItems: "center", marginTop: "3rem", fontSize: "11rem" }}>
+                                <div style={{ color: "rgb(224, 186, 120)" }}>{t("layoverMin", "layover: {n} min", { n: e.lay })}</div>
+                                {[-10, -1, 1, 10].map(dv => (
+                                    <button
+                                        key={dv}
+                                        onClick={() => trigger(G, "setLayoverRow", i, Math.max(0, Math.min(60, (e.lay ?? 0) + dv)))}
+                                        style={{ marginLeft: "4rem", cursor: "pointer", padding: "2rem 7rem", borderRadius: "3rem", fontSize: "10rem", color: "white", background: "rgba(90, 100, 115, 0.9)", pointerEvents: "auto" } as any}
+                                    >
+                                        {dv > 0 ? "+" + dv : String(dv)}
+                                    </button>
+                                ))}
+                                <button
+                                    onClick={() => trigger(G, "setLayoverRow", i, 0)}
+                                    style={{ marginLeft: "6rem", cursor: "pointer", padding: "2rem 7rem", borderRadius: "3rem", fontSize: "10rem", color: "white", background: "rgba(150, 70, 70, 0.9)", pointerEvents: "auto" } as any}
+                                >
+                                    {t("layoverClear", "remove")}
+                                </button>
+                            </div>
+                        ) : null}
                         {e.tt && !e.term ? (
-                            <button
-                                onClick={() => trigger(G, "setTerminusRow", i)}
-                                style={{ marginTop: "4rem", cursor: "pointer", padding: "3rem 10rem", borderRadius: "4rem", fontSize: "11rem", color: "white", background: "rgba(70, 110, 170, 0.9)", pointerEvents: "auto" } as any}
-                            >
-                                {t("setTerminusThis", "Set as terminus")}
-                            </button>
+                            <div style={{ display: "flex", marginTop: "4rem" }}>
+                                <button
+                                    onClick={() => trigger(G, "setTerminusRow", i)}
+                                    style={{ cursor: "pointer", padding: "3rem 10rem", borderRadius: "4rem", fontSize: "11rem", color: "white", background: "rgba(70, 110, 170, 0.9)", pointerEvents: "auto" } as any}
+                                >
+                                    {t("setTerminusThis", "Set as terminus")}
+                                </button>
+                                {/* A row can be terminus OR layover, never both (the dispatch drops a layover that
+                                    lands on the effective terminus), so the offer only appears where it can stick. */}
+                                {!e.lay ? (
+                                    <button
+                                        onClick={() => trigger(G, "setLayoverRow", i, 3)}
+                                        style={{ marginLeft: "6rem", cursor: "pointer", padding: "3rem 10rem", borderRadius: "4rem", fontSize: "11rem", color: "white", background: "rgba(150, 120, 60, 0.9)", pointerEvents: "auto" } as any}
+                                    >
+                                        {t("setLayoverThis", "Set as Terminus B")}
+                                    </button>
+                                ) : null}
+                            </div>
                         ) : null}
                     </div>
                 ))
