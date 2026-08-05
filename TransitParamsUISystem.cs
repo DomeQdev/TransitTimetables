@@ -34,11 +34,13 @@ namespace TransitTimetables
         private string m_SelTtNext = "";
         private string m_SelVehInfo = "";           // selected VEHICLE: late/early + next stop time (community request)
         private string m_SelTtRealInfo = "";        // honest real-travel-time line (real loop vs estimate + fleet consequence)
+        private int m_SelTtTerminus;                // 0 chosen+usable, 1 never chosen, 2 chosen but no longer usable
         private int m_SelSchedule = 2;              // RouteSchedule: 0=Day, 1=Night, 2=DayAndNight (which intervals apply)
         private string m_PeakHours = "", m_NightHours = "";
         private GetterValueBinding<bool> m_SelHasB, m_SelTtEnabledB;
         private GetterValueBinding<int> m_SelTtFirstB, m_SelTtPeakB, m_SelTtOffPeakB, m_SelTtNightB, m_SelTtIntervalB, m_SelTtFleetB, m_SelScheduleB;
         private GetterValueBinding<string> m_SelTtNextB, m_PeakHoursB, m_NightHoursB, m_SelTtRealInfoB, m_SelVehInfoB;
+        private GetterValueBinding<int> m_SelTtTerminusB;
         // Per-line custom peak (PR #5): enabled + interval + two hour windows.
         private bool m_SelCustomPeakEnabled;
         private int m_SelCustomPeakInterval = 5, m_SelCustomPeakStart1 = 7, m_SelCustomPeakEnd1 = 9, m_SelCustomPeakStart2 = 16, m_SelCustomPeakEnd2 = 18;
@@ -100,6 +102,7 @@ namespace TransitTimetables
             m_SelTtFleetB = new GetterValueBinding<int>(Group, "selTtFleet", () => m_SelTtFleet);
             m_SelTtNextB = new GetterValueBinding<string>(Group, "selTtNext", () => m_SelTtNext ?? "");
             m_SelTtRealInfoB = new GetterValueBinding<string>(Group, "selTtRealInfo", () => m_SelTtRealInfo ?? "");
+            m_SelTtTerminusB = new GetterValueBinding<int>(Group, "selTtTerminus", () => m_SelTtTerminus);
             m_SelVehInfoB = new GetterValueBinding<string>(Group, "selVehInfo", () => m_SelVehInfo ?? "");
             m_SelCustomPeakEnabledB = new GetterValueBinding<bool>(Group, "selCustomPeakEnabled", () => m_SelCustomPeakEnabled);
             m_SelCustomPeakIntervalB = new GetterValueBinding<int>(Group, "selCustomPeakInterval", () => m_SelCustomPeakInterval);
@@ -125,6 +128,7 @@ namespace TransitTimetables
             AddBinding(m_SelTtFleetB);
             AddBinding(m_SelTtNextB);
             AddBinding(m_SelTtRealInfoB);
+            AddBinding(m_SelTtTerminusB);
             AddBinding(m_SelVehInfoB);
             AddBinding(m_SelCustomPeakEnabledB);
             AddBinding(m_SelCustomPeakIntervalB);
@@ -304,6 +308,7 @@ namespace TransitTimetables
             m_SelTtFleetB.Update();
             m_SelTtNextB.Update();
             m_SelTtRealInfoB.Update();
+            m_SelTtTerminusB.Update();
             m_SelVehInfoB.Update();
             m_SelCustomPeakEnabledB.Update();
             m_SelCustomPeakIntervalB.Update();
@@ -383,6 +388,7 @@ namespace TransitTimetables
                 // simply false, and the correction it quotes has degraded to the cold-start density prior anyway.
                 // Same rule as the departure prediction below: report nothing rather than something untrue.
                 m_SelTtRealInfo = s.Enabled ? BuildRealInfo(sel, dur, um) : "";
+                m_SelTtTerminus = TerminusState(sel, sch);
                 Entity term = TerminusWaypoint(sel, sch);
                 // No departure predictions while the master switch is off — buses run vanilla, so posting scheduled
                 // times would mislead. The config above stays visible/editable; only the live prediction is suppressed.
@@ -392,7 +398,7 @@ namespace TransitTimetables
             {
                 m_SelTtEnabled = false;
                 m_SelTtFirst = 300; m_SelTtPeak = 8; m_SelTtOffPeak = 12; m_SelTtNight = 30;
-                m_SelTtInterval = 0; m_SelTtFleet = 0; m_SelTtNext = ""; m_SelTtRealInfo = "";
+                m_SelTtInterval = 0; m_SelTtFleet = 0; m_SelTtNext = ""; m_SelTtRealInfo = ""; m_SelTtTerminus = 0;
                 m_SelCustomPeakEnabled = false; m_SelCustomPeakInterval = 5;
                 m_SelCustomPeakStart1 = 7; m_SelCustomPeakEnd1 = 9; m_SelCustomPeakStart2 = 16; m_SelCustomPeakEnd2 = 18;
             }
@@ -607,6 +613,27 @@ namespace TransitTimetables
                     return wp;
             }
             return Entity.Null;
+        }
+
+        // Does this line have a terminus the player actually chose, and can the dispatch still use it?
+        //   0  a chosen stop, still on the route, still boardable — nothing to say
+        //   1  never chosen. FindTerminus falls back to the first stop with a boarding slot, so the line WORKS;
+        //      what the player is missing is that they never picked where the clock is anchored.
+        //   2  chosen once, but the stop is gone or no longer on this route. Same silent fallback as (1), except
+        //      here the player DID make a choice and it was quietly discarded — worth saying differently.
+        //
+        // Mirrors FindTerminus in TimetableDispatchSystem, NOT TerminusWaypoint below: the dispatch is what
+        // actually drives the holds, and it additionally requires Exists + BoardingVehicle. A warning that
+        // disagreed with the behaviour it describes would be worse than no warning at all.
+        private int TerminusState(Entity line, TimetableSchedule sch)
+        {
+            if (sch.m_TerminusStop == Entity.Null)
+                return 1;
+            if (!EntityManager.Exists(sch.m_TerminusStop)
+                || !EntityManager.HasComponent<BoardingVehicle>(sch.m_TerminusStop)
+                || WaypointForStop(line, sch.m_TerminusStop) == Entity.Null)
+                return 2;
+            return 0;
         }
 
         // The line's terminus waypoint: chosen stop's waypoint, else the first stop's waypoint.

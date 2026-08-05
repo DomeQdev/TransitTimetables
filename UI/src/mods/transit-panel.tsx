@@ -17,6 +17,7 @@ const selTtInterval$ = bindValue<number>(G, "selTtInterval", 0);
 const selTtFleet$ = bindValue<number>(G, "selTtFleet", 0);
 const selTtNext$ = bindValue<string>(G, "selTtNext", "");
 const selTtRealInfo$ = bindValue<string>(G, "selTtRealInfo", "");
+const selTtTerminus$ = bindValue<number>(G, "selTtTerminus", 0);
 // Per-line custom peak (PR #5): enable + interval + two hour windows.
 const selCustomPeakEnabled$ = bindValue<boolean>(G, "selCustomPeakEnabled", false);
 const selCustomPeakInterval$ = bindValue<number>(G, "selCustomPeakInterval", 5);
@@ -275,6 +276,7 @@ export const TimetableEditor = () => {
     const fleet = useValue(selTtFleet$) as number;
     const next = useValue(selTtNext$) as string;
     const realInfo = useValue(selTtRealInfo$) as string;
+    const terminus = useValue(selTtTerminus$) as number;
     const customPeakOn = useValue(selCustomPeakEnabled$) as boolean;
     const schedule = useValue(selSchedule$) as number; // 0=Day, 1=Night, 2=DayAndNight
     const peakHrs = useValue(peakHours$) as string;
@@ -308,6 +310,17 @@ export const TimetableEditor = () => {
                         {t("ttNext", "next: {n}", { n: next || "—" })}
                     </div>
                     <RealInfo raw={realInfo} />
+                    {/* The terminus is where the whole timetable is anchored: it is the stop whose departure board the
+                        clock is built from, and the only stop where vehicles are held to wait. Without a chosen one the
+                        dispatch silently uses the first stop with a boarding slot, which is route-order, not a decision.
+                        Two different messages on purpose — never choosing is a gap, having a choice discarded is a loss. */}
+                    {terminus !== 0 ? (
+                        <div style={{ fontSize: "11rem", color: "rgb(232, 168, 96)", marginBottom: "6rem", lineHeight: 1.35 }}>
+                            {terminus === 2
+                                ? t("terminusLost", "This line's terminus is no longer on its route, so the timetable has fallen back to the first stop. Select a stop this line serves and set it as the terminus.")
+                                : t("terminusNone", "No terminus is set for this line, so the timetable is anchored to the first stop on the route. Select a stop this line serves and set it as the terminus to choose where vehicles wait for their departure.")}
+                        </div>
+                    ) : null}
                     {/* ±1 / ±10, deliberately identical to the interval rows below — one mental model for the panel.
                         ±1 matters: staggering first departures a minute apart across lines that share a stop is a real
                         technique, and the old ±15 (then ±5) could not express it.
