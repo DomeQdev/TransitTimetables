@@ -18,6 +18,8 @@ const selTtFleet$ = bindValue<number>(G, "selTtFleet", 0);
 const selTtNext$ = bindValue<string>(G, "selTtNext", "");
 const selTtRealInfo$ = bindValue<string>(G, "selTtRealInfo", "");
 const selTtTerminus$ = bindValue<number>(G, "selTtTerminus", 0);
+const selTtLayover$ = bindValue<number>(G, "selTtLayover", 0);
+const selTtLayoverMin$ = bindValue<number>(G, "selTtLayoverMin", 0);
 // Per-line custom peak (PR #5): enable + interval + two hour windows.
 const selCustomPeakEnabled$ = bindValue<boolean>(G, "selCustomPeakEnabled", false);
 const selCustomPeakInterval$ = bindValue<number>(G, "selCustomPeakInterval", 5);
@@ -277,6 +279,8 @@ export const TimetableEditor = () => {
     const next = useValue(selTtNext$) as string;
     const realInfo = useValue(selTtRealInfo$) as string;
     const terminus = useValue(selTtTerminus$) as number;
+    const layover = useValue(selTtLayover$) as number;
+    const layoverMin = useValue(selTtLayoverMin$) as number;
     const customPeakOn = useValue(selCustomPeakEnabled$) as boolean;
     const schedule = useValue(selSchedule$) as number; // 0=Day, 1=Night, 2=DayAndNight
     const peakHrs = useValue(peakHours$) as string;
@@ -319,6 +323,24 @@ export const TimetableEditor = () => {
                             {terminus === 2
                                 ? t("terminusLost", "This line's terminus is no longer on its route, so the timetable has fallen back to the first stop. Select a stop this line serves and set it as the terminus.")
                                 : t("terminusNone", "No terminus is set for this line, so the timetable is anchored to the first stop on the route. Select a stop this line serves and set it as the terminus to choose where vehicles wait for their departure.")}
+                        </div>
+                    ) : null}
+                    {/* A layover the dispatch is NOT applying. State 3 in particular has no other home: the stop no
+                        longer lists this line, so the board cannot offer removal and the setting would sit invisible
+                        in the save, reactivating if the route were edited back. Remove is offered for both. */}
+                    {layover === 2 || layover === 3 ? (
+                        <div style={{ fontSize: "11rem", color: "rgb(232, 168, 96)", marginBottom: "6rem", lineHeight: 1.35 }}>
+                            {layover === 3
+                                ? t("layoverOrphan", "This line has a {n} min layover set on a stop that is no longer on its route, so it is not being applied.", { n: layoverMin })
+                                : t("layoverBlocked", "This line's {n} min layover is set on the stop the timetable now uses as its terminus, so it is not being applied. Move the terminus, or remove the layover.", { n: layoverMin })}
+                            <div>
+                                <button
+                                    onClick={() => trigger(G, "clearSelLayover")}
+                                    style={{ marginTop: "4rem", cursor: "pointer", padding: "3rem 10rem", borderRadius: "4rem", fontSize: "11rem", color: "white", background: "rgba(150, 70, 70, 0.9)", pointerEvents: "auto" } as any}
+                                >
+                                    {t("layoverRemove", "Remove layover")}
+                                </button>
+                            </div>
                         </div>
                     ) : null}
                     {/* ±1 / ±10, deliberately identical to the interval rows below — one mental model for the panel.

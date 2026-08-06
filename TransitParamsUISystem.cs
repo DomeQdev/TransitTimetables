@@ -35,12 +35,15 @@ namespace TransitTimetables
         private string m_SelVehInfo = "";           // selected VEHICLE: late/early + next stop time (community request)
         private string m_SelTtRealInfo = "";        // honest real-travel-time line (real loop vs estimate + fleet consequence)
         private int m_SelTtTerminus;                // 0 chosen+usable, 1 never chosen, 2 chosen but no longer usable
+        private int m_SelTtLayover;                 // 0 none, 1 active, 2 blocked (it IS the terminus), 3 orphaned (off-route)
+        private int m_SelTtLayoverMin;              // the configured X, so the panel can name it while warning
         private int m_SelSchedule = 2;              // RouteSchedule: 0=Day, 1=Night, 2=DayAndNight (which intervals apply)
         private string m_PeakHours = "", m_NightHours = "";
         private GetterValueBinding<bool> m_SelHasB, m_SelTtEnabledB;
         private GetterValueBinding<int> m_SelTtFirstB, m_SelTtPeakB, m_SelTtOffPeakB, m_SelTtNightB, m_SelTtIntervalB, m_SelTtFleetB, m_SelScheduleB;
         private GetterValueBinding<string> m_SelTtNextB, m_PeakHoursB, m_NightHoursB, m_SelTtRealInfoB, m_SelVehInfoB;
         private GetterValueBinding<int> m_SelTtTerminusB;
+        private GetterValueBinding<int> m_SelTtLayoverB, m_SelTtLayoverMinB;
         // Per-line custom peak (PR #5): enabled + interval + two hour windows.
         private bool m_SelCustomPeakEnabled;
         private int m_SelCustomPeakInterval = 5, m_SelCustomPeakStart1 = 7, m_SelCustomPeakEnd1 = 9, m_SelCustomPeakStart2 = 16, m_SelCustomPeakEnd2 = 18;
@@ -103,6 +106,8 @@ namespace TransitTimetables
             m_SelTtNextB = new GetterValueBinding<string>(Group, "selTtNext", () => m_SelTtNext ?? "");
             m_SelTtRealInfoB = new GetterValueBinding<string>(Group, "selTtRealInfo", () => m_SelTtRealInfo ?? "");
             m_SelTtTerminusB = new GetterValueBinding<int>(Group, "selTtTerminus", () => m_SelTtTerminus);
+            m_SelTtLayoverB = new GetterValueBinding<int>(Group, "selTtLayover", () => m_SelTtLayover);
+            m_SelTtLayoverMinB = new GetterValueBinding<int>(Group, "selTtLayoverMin", () => m_SelTtLayoverMin);
             m_SelVehInfoB = new GetterValueBinding<string>(Group, "selVehInfo", () => m_SelVehInfo ?? "");
             m_SelCustomPeakEnabledB = new GetterValueBinding<bool>(Group, "selCustomPeakEnabled", () => m_SelCustomPeakEnabled);
             m_SelCustomPeakIntervalB = new GetterValueBinding<int>(Group, "selCustomPeakInterval", () => m_SelCustomPeakInterval);
@@ -129,6 +134,8 @@ namespace TransitTimetables
             AddBinding(m_SelTtNextB);
             AddBinding(m_SelTtRealInfoB);
             AddBinding(m_SelTtTerminusB);
+            AddBinding(m_SelTtLayoverB);
+            AddBinding(m_SelTtLayoverMinB);
             AddBinding(m_SelVehInfoB);
             AddBinding(m_SelCustomPeakEnabledB);
             AddBinding(m_SelCustomPeakIntervalB);
@@ -170,6 +177,14 @@ namespace TransitTimetables
             // Layover ("Terminus B"): give one board row's stop a scheduled layover of N minutes for its line, sent as
             // the ABSOLUTE value (the stepper idiom every other numeric trigger uses); 0 clears it.
             AddBinding(new TriggerBinding<int, int>(Group, "setLayoverRow", SetLayoverRow));
+            // Clear the OPEN line's layover from the line panel. The stop board can only offer removal on a row it
+            // still lists, so a layover whose stop left the route would otherwise be unreachable — see LayoverState 3.
+            AddBinding(new TriggerBinding(Group, "clearSelLayover", () =>
+            {
+                if (m_LastLine != Entity.Null && EntityManager.Exists(m_LastLine)
+                    && EntityManager.HasComponent<LineLayover>(m_LastLine))
+                { EntityManager.RemoveComponent<LineLayover>(m_LastLine); m_UiDirty = true; }
+            }));
         }
 
         private delegate void RefSchedAction<T>(ref TimetableSchedule sch, T value);
@@ -358,6 +373,8 @@ namespace TransitTimetables
             m_SelTtNextB.Update();
             m_SelTtRealInfoB.Update();
             m_SelTtTerminusB.Update();
+            m_SelTtLayoverB.Update();
+            m_SelTtLayoverMinB.Update();
             m_SelVehInfoB.Update();
             m_SelCustomPeakEnabledB.Update();
             m_SelCustomPeakIntervalB.Update();
@@ -443,6 +460,7 @@ namespace TransitTimetables
                 // Same rule as the departure prediction below: report nothing rather than something untrue.
                 m_SelTtRealInfo = s.Enabled ? BuildRealInfo(sel, dur, um) : "";
                 m_SelTtTerminus = TerminusState(sel, sch);
+                m_SelTtLayover = LayoverState(sel, sch, out m_SelTtLayoverMin);
                 Entity term = TerminusWaypoint(sel, sch);
                 // No departure predictions while the master switch is off — buses run vanilla, so posting scheduled
                 // times would mislead. The config above stays visible/editable; only the live prediction is suppressed.
@@ -453,6 +471,7 @@ namespace TransitTimetables
                 m_SelTtEnabled = false;
                 m_SelTtFirst = 300; m_SelTtPeak = 8; m_SelTtOffPeak = 12; m_SelTtNight = 30;
                 m_SelTtInterval = 0; m_SelTtFleet = 0; m_SelTtNext = ""; m_SelTtRealInfo = ""; m_SelTtTerminus = 0;
+                m_SelTtLayover = 0; m_SelTtLayoverMin = 0;
                 m_SelCustomPeakEnabled = false; m_SelCustomPeakInterval = 5;
                 m_SelCustomPeakStart1 = 7; m_SelCustomPeakEnd1 = 9; m_SelCustomPeakStart2 = 16; m_SelCustomPeakEnd2 = 18;
             }
@@ -700,6 +719,33 @@ namespace TransitTimetables
             return Entity.Null;
         }
 
+        // Is this line's layover being APPLIED, and if not, why not? The stop board can only speak for a stop it
+        // lists, so these two failure states need a home on the LINE panel:
+        //   0  no layover set
+        //   1  set and active
+        //   2  set, but the stop is now the effective terminus — the dispatch drops it (terminus wins) and the board
+        //      shows it dimmed, but only if the player happens to open that stop
+        //   3  set, but the stop is destroyed or no longer on this route. The board CANNOT show it at all (the stop
+        //      no longer lists the line), so without this the component is invisible and unremovable, and silently
+        //      reactivates if the route is ever edited back. This state is why clearSelLayover exists.
+        private int LayoverState(Entity line, TimetableSchedule sch, out int minutes)
+        {
+            minutes = 0;
+            if (!EntityManager.HasComponent<LineLayover>(line))
+                return 0;
+            LineLayover lay = EntityManager.GetComponentData<LineLayover>(line);
+            if (lay.m_HoldMinutes == 0 || lay.m_Stop == Entity.Null)
+                return 0;
+            minutes = lay.m_HoldMinutes;
+            if (!EntityManager.Exists(lay.m_Stop) || !EntityManager.HasComponent<BoardingVehicle>(lay.m_Stop)
+                || WaypointForStop(line, lay.m_Stop) == Entity.Null)
+                return 3;
+            Entity termWp = TerminusWaypoint(line, sch);
+            Entity termStop = termWp != Entity.Null && EntityManager.HasComponent<Connected>(termWp)
+                ? EntityManager.GetComponentData<Connected>(termWp).m_Connected : Entity.Null;
+            return termStop == lay.m_Stop ? 2 : 1;
+        }
+
         // Does this line have a terminus the player actually chose, and can the dispatch still use it?
         //   0  a chosen stop, still on the route, still boardable — nothing to say
         //   1  never chosen. FindTerminus falls back to the first stop with a boarding slot, so the line WORKS;
@@ -883,7 +929,13 @@ namespace TransitTimetables
             }
             else
             {
-                offset = (int)System.Math.Round(TravelUnitsBetween(line, terminusWp, stopWp) * m_Timebase.UnitMinutes);
+                // Pre-publish fallback: the dispatch has not walked this line yet (first tick after a load, or a line
+                // it is not ticking). The layover has to be added HERE too, or for that window the board prints
+                // departures WITHOUT X at the layover stop and everywhere after it — times the vehicles will not keep.
+                // This is a second implementation of the estimate, not of the layover RULE: which stops owe X is
+                // decided once, by walking the route in LayoverMinutesUpTo, exactly as the dispatch's carry does.
+                offset = (int)System.Math.Round(TravelUnitsBetween(line, terminusWp, stopWp) * m_Timebase.UnitMinutes)
+                       + LayoverMinutesUpTo(line, terminusWp, stopWp);
                 estimated = true;                                    // say so on the board rather than implying precision
             }
             // Clamp the seed so a stop whose first arrival is still ahead (offset > now, early morning) advertises the
@@ -912,6 +964,34 @@ namespace TransitTimetables
                 sb.Append(ScheduleMath.FormatHm(deps[k] + offset));
             }
             return sb.ToString();
+        }
+
+        // Layover minutes already incurred by the time a vehicle DEPARTS `toWp`, walking the route from `fromWp`
+        // (the terminus). The layover stop's own X counts AT that stop — its departure is its arrival plus X — and at
+        // every stop after it, which is precisely the dispatch's layoverCarry rule. 0 before the layover, and 0 when
+        // the line has no active one. Only the estimate fallback in DeparturesAtStop uses this: once the dispatch has
+        // published an offset that number already contains X, and nothing may recompute it.
+        private int LayoverMinutesUpTo(Entity line, Entity fromWp, Entity toWp)
+        {
+            if (m_Dispatch == null || !m_Dispatch.TryActiveLayover(line, out Entity layStop, out int layMin))
+                return 0;
+            Entity layWp = WaypointForStop(line, layStop);
+            if (layWp == Entity.Null || layWp == fromWp || !EntityManager.HasBuffer<RouteWaypoint>(line))
+                return 0;
+            DynamicBuffer<RouteWaypoint> wps = EntityManager.GetBuffer<RouteWaypoint>(line, isReadOnly: true);
+            int len = wps.Length;
+            int start = 0;
+            for (int i = 0; i < len; i++)
+                if (wps[i].m_Waypoint == fromWp) { start = i; break; }
+            for (int j = 0; j < len; j++)
+            {
+                int wi = start + j; if (wi >= len) wi -= len;
+                Entity wp = wps[wi].m_Waypoint;
+                // Layover tested FIRST so the layover stop itself owes its own X (arrival + X is its departure).
+                if (wp == layWp) return layMin;
+                if (wp == toWp) return 0;               // reached the target first: the layover is downstream of it
+            }
+            return 0;
         }
 
         // Travel time (route units) from waypoint `fromWp` forward around the loop to `toWp`, including dwell at
