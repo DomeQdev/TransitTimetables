@@ -93,7 +93,7 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<!--Link to the forum post where the mod can be discussed-->
 	<ForumLink Value="https://forum.paradoxplaza.com/forum/threads/mod-transittimetables-adjust-departure-times-and-frequencies-in-all-types-of-transit-systems.1936039/" />
 	<!--Version of the mod-->
-	<ModVersion Value="0.5.3" />
+	<ModVersion Value="0.5.3.1" />
 	<!--Recommended version of the base game to use the mod-->
 	<GameVersion Value="1.6.*" />
 	<!--Dependency for the mod, can be set multiple times-->
@@ -102,6 +102,16 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
 	<ChangeLog>
+v0.5.3.1 [BETA] - Scheduled layovers, and a localization fix
+
+- FIX: most of the panel was showing English no matter what language you play in. The mod has shipped translations for the vehicle status readout, the loop measurement lines and the terminus warnings, but those particular strings were never handed to the game's localization system, so every language quietly fell back to English. They are wired up now, and the wiring is derived from the string table rather than kept by hand, so a string cannot be missed this way again.
+
+- NEW: a scheduled layover. Pick a stop on a timetabled line, press Set as Terminus B, and give it a number of minutes. Vehicles wait there before continuing, and every stop after it is posted that many minutes later, so the board still matches what the vehicles do. The wait is measured from the SCHEDULED arrival, so a vehicle running late waits less and a badly delayed one does not wait at all: the stop absorbs delay rather than adding to it. Departures from the stop stay put while arrivals move.
+
+- The layover stop is always called at, even when nobody is waiting there, and it never doubles as the terminus. If its stop is deleted or the route stops serving it, the line panel says so and offers to remove it.
+
+- Note: a layover makes the round trip longer, so a line needs a few more vehicles to keep the same interval. That is only accounted for when Provision fleet for real travel time is on. The layover itself is never counted as the route being slower, so it does not distort the measured loop time.
+
 v0.5.3 [BETA] - The realism toggles are back
 
 - The checkboxes from before 0.5 are on the Options page again: "Manage vehicle count", "Provision fleet for real travel time" and "Realistic travel time". 0.5 folded them into one dropdown, and doing so removed the middle option: let the mod manage vehicle counts, but size them from the game's own estimate rather than the measured loop. That combination is back, so a high-frequency line can be managed without being provisioned for its full real loop.
@@ -121,16 +131,6 @@ v0.5.2.2 [BETA] - See how late a vehicle is running
 - A vehicle that joined its line partway round, which is what happens when one leaves a depot, says it is not yet on the timetable. It has no scheduled departure to be measured against until it first reaches the terminus, so there is nothing honest to report before then.
 
 - While a line is still learning how long its route really takes, the panel says so, since those times will still move.
-
-v0.5.1 [BETA] - Vehicle counts stop over-shooting, and stop jumping on their own
-
-- FIX: some lines asked for far too many vehicles. The mod times how long a line takes to go round by watching a vehicle leave the terminus and come back, and on a busy line it could miss a return and record two loops as one. It used to average every reading together, so those doubled timings dragged the answer up permanently. It now takes the middle reading instead, so a stray bad timing no longer moves it.
-
-- FIX: a line could suddenly demand a lot more vehicles for no visible reason. A safety net meant for edited routes was firing on healthy lines and discarding everything they had learned, sometimes hundreds of timed laps, then restarting from whichever odd reading had triggered it. It now keeps what it has learned and simply recalibrates.
-
-- FIX: the TIMETABLE panel appeared twice on a line if you returned to the main menu and loaded another city without restarting the game.
-
-- The line panel now says whether a line is still measuring, refining, or measured, and warns while refining that its vehicle count is cautious and may rise.
 	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
 	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />
