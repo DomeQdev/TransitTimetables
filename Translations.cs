@@ -68,6 +68,7 @@ namespace TransitTimetables
             { "ui.terminusBadge", "terminus" },
             { "ui.departs", "departs: {d}" },
             { "ui.layoverBadge", "layover stop" },
+            { "ui.layoverOff", "layover (inactive)" },
             { "ui.arrives", "arrives: {d}" },
             { "ui.layoverMin", "layover: {n} min" },
             { "ui.layoverClear", "remove" },

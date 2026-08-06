@@ -79,53 +79,13 @@ namespace TransitTimetables
 
         public IEnumerable<KeyValuePair<string, string>> ReadEntries(IList<IDictionaryEntryError> errors, Dictionary<string, int> indexCounts)
         {
-            return new Dictionary<string, string>
+            var entries = new Dictionary<string, string>
             {
                 { m_S.GetSettingsLocaleID(), "Transit Timetables" },
                 { m_S.GetOptionTabLocaleID(TransitTimetablesSetting.Section), "Main" },
-                { "TransitTimetables.ui.to", T("ui.to") },
-                { "TransitTimetables.ui.timetable", T("ui.timetable") },
-                { "TransitTimetables.ui.on", T("ui.on") },
-                { "TransitTimetables.ui.off", T("ui.off") },
-                { "TransitTimetables.ui.ttNow", T("ui.ttNow") },
-                { "TransitTimetables.ui.ttNext", T("ui.ttNext") },
-                { "TransitTimetables.ui.firstDeparture", T("ui.firstDeparture") },
-                { "TransitTimetables.ui.peakInterval", T("ui.peakInterval") },
-                { "TransitTimetables.ui.offPeakInterval", T("ui.offPeakInterval") },
-                { "TransitTimetables.ui.otherHours", T("ui.otherHours") },
-                { "TransitTimetables.ui.nightInterval", T("ui.nightInterval") },
-                { "TransitTimetables.ui.customLinePeak", T("ui.customLinePeak") },
-                { "TransitTimetables.ui.morningPeak", T("ui.morningPeak") },
-                { "TransitTimetables.ui.eveningPeak", T("ui.eveningPeak") },
-                { "TransitTimetables.ui.customPeakInterval", T("ui.customPeakInterval") },
-                { "TransitTimetables.ui.terminusHint", T("ui.terminusHint") },
-                { "TransitTimetables.ui.noLines", T("ui.noLines") },
-                { "TransitTimetables.ui.line", T("ui.line") },
-                { "TransitTimetables.ui.terminusBadge", T("ui.terminusBadge") },
-                { "TransitTimetables.ui.departs", T("ui.departs") },
-                { "TransitTimetables.ui.noDepartures", T("ui.noDepartures") },
-                { "TransitTimetables.ui.notTimetabled", T("ui.notTimetabled") },
-                { "TransitTimetables.ui.setTerminusThis", T("ui.setTerminusThis") },
-                { "TransitTimetables.ui.setTerminusAll", T("ui.setTerminusAll") },
-                { "TransitTimetables.ui.setTerminusHint", T("ui.setTerminusHint") },
-                { "TransitTimetables.ui.buttonTooltip", T("ui.buttonTooltip") },
-                { "TransitTimetables.ui.panelTitle", T("ui.panelTitle") },
-                { "TransitTimetables.ui.panelHint", T("ui.panelHint") },
-                { "TransitTimetables.ui.estimatedTimes", T("ui.estimatedTimes") },
                 // The "real loop" line. Built in the UI from these templates, NOT in C# — clause order differs between
                 // languages, so each one needs a whole sentence rather than translated fragments glued in English order.
-                { "TransitTimetables.ui.realLoopMeasured", T("ui.realLoopMeasured") },
-                { "TransitTimetables.ui.realLoopEstimated", T("ui.realLoopEstimated") },
-                { "TransitTimetables.ui.provisioning", T("ui.provisioning") },
-                { "TransitTimetables.ui.notSetByMod", T("ui.notSetByMod") },
-                { "TransitTimetables.ui.sizingSoon", T("ui.sizingSoon") },
                 // One-time migration notice (rendered by the mod's own React dialog, not the Options page).
-                { "TransitTimetables.ui.noticeTitle", T("ui.noticeTitle") },
-                { "TransitTimetables.ui.noticeBody", T("ui.noticeBody") },
-                { "TransitTimetables.ui.noticeAsk", T("ui.noticeAsk") },
-                { "TransitTimetables.ui.noticeWhere", T("ui.noticeWhere") },
-                { "TransitTimetables.ui.noticeKeep", T("ui.noticeKeep") },
-                { "TransitTimetables.ui.noticeOff", T("ui.noticeOff") },
                 { m_S.GetOptionGroupLocaleID(TransitTimetablesSetting.GroupWindows), T("grp.GroupWindows") },
                 { m_S.GetOptionGroupLocaleID(TransitTimetablesSetting.GroupCompat), T("grp.GroupCompat") },
 
@@ -169,6 +129,16 @@ namespace TransitTimetables
                 // a RAW LOCALE KEY instead of a warning — unacceptable for an action that clears every timetable.
                 { m_S.GetOptionWarningLocaleID(nameof(TransitTimetablesSetting.CleanUninstall)), T("opt.CleanUninstall.W") },
             };
+            // Every ui.* key the panel can request, ENUMERATED from the English table rather than hand-listed.
+            // The hand-kept list this replaces had silently drifted 19 keys behind the panel — every vehicle-
+            // schedule string, the loop-stage strings, rttOffWarning and both terminus warnings were unregistered,
+            // so the translations shipped for them were dead and every locale saw the tsx English fallback.
+            // The tsx carries an English fallback for every key, so an extra registration is harmless and a
+            // missing one is invisible in English — exactly the failure shape that must not depend on memory.
+            foreach (var kv in Translations.En)
+                if (kv.Key.StartsWith("ui.", System.StringComparison.Ordinal))
+                    entries["TransitTimetables." + kv.Key] = T(kv.Key);
+            return entries;
         }
 
         public void Unload() { }

@@ -239,6 +239,16 @@ namespace TransitTimetables
             Entity stop = m_BoardRows[i].stop;
             if (line == Entity.Null || stop == Entity.Null || !EntityManager.HasComponent<TimetableSchedule>(line))
                 return;
+            // -1 is the "set this stop" sentinel the button sends: when the layover is being MOVED from another stop,
+            // keep the line's configured minutes — clicking Set on a new stop must not silently reset a tuned 15 back
+            // to the default (review-caught). A fresh set starts at 3. Resolved BEFORE the clamp: Clamp would turn the
+            // sentinel into 0, which means "clear" — the exact opposite of the button's intent.
+            if (minutes < 0)
+            {
+                minutes = EntityManager.HasComponent<LineLayover>(line)
+                    ? EntityManager.GetComponentData<LineLayover>(line).m_HoldMinutes : 0;
+                if (minutes <= 0) minutes = 3;
+            }
             m_UiDirty = true;
             minutes = Clamp(minutes, 0, 60);
             if (minutes == 0)
@@ -587,6 +597,7 @@ namespace TransitTimetables
                 bool est = false;
                 int lay = 0;        // this row's stop is its line's active layover ("Terminus B"): X minutes
                 string arr = "";    // ...and these are its pre-layover arrivals (departures = the ordinary dep list)
+                bool layOff = false; // a layover is SET on this stop but the dispatch dropped it (inactive)
                 if (tt)
                 {
                     Entity terminusWp = TerminusWaypoint(line, sch);
@@ -618,6 +629,17 @@ namespace TransitTimetables
                         if (stopWp != Entity.Null && m_Dispatch.TryPostedArrivalMinutes(stopWp, out int arrOff))
                             arr = FormatTimesFromOffset(line, sch, ScheduleOf(line), nowMin, arrOff);
                     }
+                    // A layover SET on this stop but dropped by the dispatch (the effective terminus moved onto it)
+                    // would otherwise be invisible AND unremovable — the component silently persists and reactivates
+                    // whenever the terminus moves again. Review-caught. Show it dimmed, stepper and remove still live.
+                    // (Residual gap, accepted: if the ROUTE is edited so the line no longer serves the stop at all,
+                    // the stop's board no longer lists the line and the set layover is unreachable until the player
+                    // re-adds the stop or sets a layover elsewhere, which overwrites it.)
+                    else if (EntityManager.HasComponent<LineLayover>(line))
+                    {
+                        LineLayover ll = EntityManager.GetComponentData<LineLayover>(line);
+                        if (ll.m_Stop == stop && ll.m_HoldMinutes > 0) { lay = ll.m_HoldMinutes; layOff = true; }
+                    }
                 }
                 if (i > 0) sb.Append(',');
                 sb.Append("{\"n\":").Append(number);
@@ -626,8 +648,11 @@ namespace TransitTimetables
                   .Append(",\"term\":").Append(term ? "true" : "false")
                   .Append(",\"est\":").Append(est ? "true" : "false");    // times derived from the game's estimate, not measured
                 if (lay > 0)
+                {
                     sb.Append(",\"lay\":").Append(lay)
                       .Append(",\"a\":\"").Append(arr).Append('"');
+                    if (layOff) sb.Append(",\"layOff\":true");
+                }
                 sb.Append(",\"d\":\"").Append(dep).Append("\"}");
             }
             sb.Append(']');

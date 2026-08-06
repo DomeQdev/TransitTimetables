@@ -372,7 +372,7 @@ export const TimetableEditor = () => {
 const StopBoard = () => {
     const raw = useValue(selStopBoard$) as string;
     const t = useT();
-    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; est?: boolean; lay?: number; a?: string; d: string }> = [];
+    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; est?: boolean; lay?: number; a?: string; layOff?: boolean; d: string }> = [];
     try { board = JSON.parse(raw || "[]"); } catch { board = []; }
     const ttCount = board.filter((e) => e.tt).length;
     const termBtn = {
@@ -389,7 +389,11 @@ const StopBoard = () => {
                         <div style={{ display: "flex", alignItems: "center", fontSize: "13rem", fontWeight: "bold" }}>
                             <div style={{ flex: 1 }}>{e.nm ? e.nm : t("line", "Line {n}", { n: e.n })}</div>
                             {e.term ? <div style={{ fontSize: "11rem", color: "rgb(120, 210, 130)" }}>★ {t("terminusBadge", "terminus")}</div> : null}
-                            {e.lay ? <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)" }}>⏸ {t("layoverBadge", "layover stop")}</div> : null}
+                            {e.lay ? (
+                                <div style={{ fontSize: "11rem", color: e.layOff ? "rgba(224, 186, 120, 0.5)" : "rgb(224, 186, 120)" }}>
+                                    ⏸ {e.layOff ? t("layoverOff", "layover (inactive)") : t("layoverBadge", "layover stop")}
+                                </div>
+                            ) : null}
                         </div>
                         {/* At the layover stop arrival and departure are the ONE place they differ: show both rows,
                             arrivals first, both fed by C# from the same dispatch walk (never derived here). */}
@@ -440,7 +444,7 @@ const StopBoard = () => {
                                     lands on the effective terminus), so the offer only appears where it can stick. */}
                                 {!e.lay ? (
                                     <button
-                                        onClick={() => trigger(G, "setLayoverRow", i, 3)}
+                                        onClick={() => trigger(G, "setLayoverRow", i, -1)}
                                         style={{ marginLeft: "6rem", cursor: "pointer", padding: "3rem 10rem", borderRadius: "4rem", fontSize: "11rem", color: "white", background: "rgba(150, 120, 60, 0.9)", pointerEvents: "auto" } as any}
                                     >
                                         {t("setLayoverThis", "Set as Terminus B")}
