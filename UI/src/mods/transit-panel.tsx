@@ -17,6 +17,9 @@ const selTtInterval$ = bindValue<number>(G, "selTtInterval", 0);
 const selTtFleet$ = bindValue<number>(G, "selTtFleet", 0);
 const selTtNext$ = bindValue<string>(G, "selTtNext", "");
 const selTtRealInfo$ = bindValue<string>(G, "selTtRealInfo", "");
+const selTtTerminus$ = bindValue<number>(G, "selTtTerminus", 0);
+const selTtLayover$ = bindValue<number>(G, "selTtLayover", 0);
+const selTtLayoverMin$ = bindValue<number>(G, "selTtLayoverMin", 0);
 // Per-line custom peak (PR #5): enable + interval + two hour windows.
 const selCustomPeakEnabled$ = bindValue<boolean>(G, "selCustomPeakEnabled", false);
 const selCustomPeakInterval$ = bindValue<number>(G, "selCustomPeakInterval", 5);
@@ -275,6 +278,9 @@ export const TimetableEditor = () => {
     const fleet = useValue(selTtFleet$) as number;
     const next = useValue(selTtNext$) as string;
     const realInfo = useValue(selTtRealInfo$) as string;
+    const terminus = useValue(selTtTerminus$) as number;
+    const layover = useValue(selTtLayover$) as number;
+    const layoverMin = useValue(selTtLayoverMin$) as number;
     const customPeakOn = useValue(selCustomPeakEnabled$) as boolean;
     const schedule = useValue(selSchedule$) as number; // 0=Day, 1=Night, 2=DayAndNight
     const peakHrs = useValue(peakHours$) as string;
@@ -308,6 +314,35 @@ export const TimetableEditor = () => {
                         {t("ttNext", "next: {n}", { n: next || "—" })}
                     </div>
                     <RealInfo raw={realInfo} />
+                    {/* The terminus is where the whole timetable is anchored: it is the stop whose departure board the
+                        clock is built from, and the only stop where vehicles are held to wait. Without a chosen one the
+                        dispatch silently uses the first stop with a boarding slot, which is route-order, not a decision.
+                        Two different messages on purpose — never choosing is a gap, having a choice discarded is a loss. */}
+                    {terminus !== 0 ? (
+                        <div style={{ fontSize: "11rem", color: "rgb(232, 168, 96)", marginBottom: "6rem", lineHeight: 1.35 }}>
+                            {terminus === 2
+                                ? t("terminusLost", "This line's terminus is no longer on its route, so the timetable has fallen back to the first stop. Select a stop this line serves and set it as the terminus.")
+                                : t("terminusNone", "No terminus is set for this line, so the timetable is anchored to the first stop on the route. Select a stop this line serves and set it as the terminus to choose where vehicles wait for their departure.")}
+                        </div>
+                    ) : null}
+                    {/* A layover the dispatch is NOT applying. State 3 in particular has no other home: the stop no
+                        longer lists this line, so the board cannot offer removal and the setting would sit invisible
+                        in the save, reactivating if the route were edited back. Remove is offered for both. */}
+                    {layover === 2 || layover === 3 ? (
+                        <div style={{ fontSize: "11rem", color: "rgb(232, 168, 96)", marginBottom: "6rem", lineHeight: 1.35 }}>
+                            {layover === 3
+                                ? t("layoverOrphan", "This line has a {n} min layover set on a stop that is no longer on its route, so it is not being applied.", { n: layoverMin })
+                                : t("layoverBlocked", "This line's {n} min layover is set on the stop the timetable now uses as its terminus, so it is not being applied. Move the terminus, or remove the layover.", { n: layoverMin })}
+                            <div>
+                                <button
+                                    onClick={() => trigger(G, "clearSelLayover")}
+                                    style={{ marginTop: "4rem", cursor: "pointer", padding: "3rem 10rem", borderRadius: "4rem", fontSize: "11rem", color: "white", background: "rgba(150, 70, 70, 0.9)", pointerEvents: "auto" } as any}
+                                >
+                                    {t("layoverRemove", "Remove layover")}
+                                </button>
+                            </div>
+                        </div>
+                    ) : null}
                     {/* ±1 / ±10, deliberately identical to the interval rows below — one mental model for the panel.
                         ±1 matters: staggering first departures a minute apart across lines that share a stop is a real
                         technique, and the old ±15 (then ±5) could not express it.
@@ -359,7 +394,7 @@ export const TimetableEditor = () => {
 const StopBoard = () => {
     const raw = useValue(selStopBoard$) as string;
     const t = useT();
-    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; est?: boolean; d: string }> = [];
+    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; est?: boolean; lay?: number; a?: string; layOff?: boolean; d: string }> = [];
     try { board = JSON.parse(raw || "[]"); } catch { board = []; }
     const ttCount = board.filter((e) => e.tt).length;
     const termBtn = {
@@ -376,7 +411,24 @@ const StopBoard = () => {
                         <div style={{ display: "flex", alignItems: "center", fontSize: "13rem", fontWeight: "bold" }}>
                             <div style={{ flex: 1 }}>{e.nm ? e.nm : t("line", "Line {n}", { n: e.n })}</div>
                             {e.term ? <div style={{ fontSize: "11rem", color: "rgb(120, 210, 130)" }}>★ {t("terminusBadge", "terminus")}</div> : null}
+                            {e.lay ? (
+                                <div style={{ fontSize: "11rem", color: e.layOff ? "rgba(224, 186, 120, 0.5)" : "rgb(224, 186, 120)" }}>
+                                    {/* NO GLYPH. This carried a U+23F8 pause symbol, which the game's UI font does
+                                        not contain, so it drew a tofu box on every layover row (seen in two players'
+                                        screenshots). The terminus badge's ★ (U+2605) renders because it predates the
+                                        emoji blocks; anything from those blocks is a gamble here. The amber colour
+                                        already distinguishes this badge from the green terminus one. */}
+                                    {e.layOff ? t("layoverOff", "layover (inactive)") : t("layoverBadge", "layover stop")}
+                                </div>
+                            ) : null}
                         </div>
+                        {/* At the layover stop arrival and departure are the ONE place they differ: show both rows,
+                            arrivals first, both fed by C# from the same dispatch walk (never derived here). */}
+                        {e.tt && e.lay && e.a ? (
+                            <div style={{ fontSize: "12rem", color: "rgba(255,255,255,0.6)" }}>
+                                {t("arrives", "arrives: {d}", { d: e.a })}
+                            </div>
+                        ) : null}
                         <div style={{ fontSize: "12rem", color: e.tt ? "rgb(120, 210, 130)" : "rgba(255,255,255,0.45)" }}>
                             {e.tt ? (e.d ? t("departs", "departs: {d}", { d: e.d }) : t("noDepartures", "no departures scheduled")) : t("notTimetabled", "not timetabled")}
                         </div>
@@ -385,13 +437,47 @@ const StopBoard = () => {
                         {e.tt && e.est && e.d ? (
                             <div style={{ fontSize: "11rem", opacity: 0.45 }}>{t("estimatedTimes", "estimated, not yet measured")}</div>
                         ) : null}
+                        {/* The layover stepper: same ±1/±10 idiom as every other numeric control, absolute value sent.
+                            Stepping down to 0 clears the layover (the component is removed), same meaning as remove. */}
+                        {e.tt && e.lay ? (
+                            <div style={{ display: "flex", alignItems: "center", marginTop: "3rem", fontSize: "11rem" }}>
+                                <div style={{ color: "rgb(224, 186, 120)" }}>{t("layoverMin", "layover: {n} min", { n: e.lay })}</div>
+                                {[-10, -1, 1, 10].map(dv => (
+                                    <button
+                                        key={dv}
+                                        onClick={() => trigger(G, "setLayoverRow", i, Math.max(0, Math.min(60, (e.lay ?? 0) + dv)))}
+                                        style={{ marginLeft: "4rem", cursor: "pointer", padding: "2rem 7rem", borderRadius: "3rem", fontSize: "10rem", color: "white", background: "rgba(90, 100, 115, 0.9)", pointerEvents: "auto" } as any}
+                                    >
+                                        {dv > 0 ? "+" + dv : String(dv)}
+                                    </button>
+                                ))}
+                                <button
+                                    onClick={() => trigger(G, "setLayoverRow", i, 0)}
+                                    style={{ marginLeft: "6rem", cursor: "pointer", padding: "2rem 7rem", borderRadius: "3rem", fontSize: "10rem", color: "white", background: "rgba(150, 70, 70, 0.9)", pointerEvents: "auto" } as any}
+                                >
+                                    {t("layoverClear", "remove")}
+                                </button>
+                            </div>
+                        ) : null}
                         {e.tt && !e.term ? (
-                            <button
-                                onClick={() => trigger(G, "setTerminusRow", i)}
-                                style={{ marginTop: "4rem", cursor: "pointer", padding: "3rem 10rem", borderRadius: "4rem", fontSize: "11rem", color: "white", background: "rgba(70, 110, 170, 0.9)", pointerEvents: "auto" } as any}
-                            >
-                                {t("setTerminusThis", "Set as terminus")}
-                            </button>
+                            <div style={{ display: "flex", marginTop: "4rem" }}>
+                                <button
+                                    onClick={() => trigger(G, "setTerminusRow", i)}
+                                    style={{ cursor: "pointer", padding: "3rem 10rem", borderRadius: "4rem", fontSize: "11rem", color: "white", background: "rgba(70, 110, 170, 0.9)", pointerEvents: "auto" } as any}
+                                >
+                                    {t("setTerminusThis", "Set as terminus")}
+                                </button>
+                                {/* A row can be terminus OR layover, never both (the dispatch drops a layover that
+                                    lands on the effective terminus), so the offer only appears where it can stick. */}
+                                {!e.lay ? (
+                                    <button
+                                        onClick={() => trigger(G, "setLayoverRow", i, -1)}
+                                        style={{ marginLeft: "6rem", cursor: "pointer", padding: "3rem 10rem", borderRadius: "4rem", fontSize: "11rem", color: "white", background: "rgba(150, 120, 60, 0.9)", pointerEvents: "auto" } as any}
+                                    >
+                                        {t("setLayoverThis", "Set as Terminus B")}
+                                    </button>
+                                ) : null}
+                            </div>
                         ) : null}
                     </div>
                 ))

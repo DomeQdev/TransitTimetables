@@ -1,8 +1,8 @@
 import { useLocalization } from "cs2/l10n";
 
 // Panel localization: every user-visible string goes through t(key, fallback, vars). Ids are
-// "TransitTimetables.ui.<key>". No ui.* keys are registered yet, so English fallbacks are always used;
-// wiring translations later is additive (register the keys in LocaleSource from Translations).
+// "TransitTimetables.ui.<key>". Every ui.* key in Translations.En is registered by LocaleEn (enumerated,
+// not hand-listed), so the inline English here is only the fallback for a locale gap or a load race.
 export function useT() {
     const loc = useLocalization();
     return (key: string, fallback: string, vars?: Record<string, string | number>) => {
