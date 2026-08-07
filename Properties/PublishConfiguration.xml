@@ -9,7 +9,14 @@
 	<LongDescription>
 Turn any public-transport line into a scheduled service. Works for every passenger type: buses, trams, trains, metros, ferries and aircraft.
 
-WHAT'S NEW IN 0.5.3:
+WHAT'S NEW IN 0.5.3.1:
+
+- Scheduled layovers. Pick a stop on a timetabled line, press "Set as Terminus B", and give it a number of minutes. Vehicles wait there before carrying on, and every stop after it is posted that many minutes later, so the board still matches what the vehicles do.
+- The wait is measured from the SCHEDULED arrival, not the actual one, so a vehicle running late waits less and a badly delayed one does not wait at all. The stop absorbs delay instead of adding to it, which is what a real timing point is for.
+- The layover stop lists both its arrival and its departure times, and the line panel tells you if a layover has stopped being applied.
+- FIX: most of the panel was showing English no matter which language you play in. Those strings were never handed to the game's localization system, so every language quietly fell back to English. They are wired up now, and the wiring is derived from the string table so a string cannot be missed that way again.
+
+Earlier in 0.5.3:
 
 - The realism checkboxes from before 0.5 are back on the Options page, including the one a lot of you were using: let the mod manage vehicle counts, but size them from the game's own estimate instead of the measured loop. High-frequency lines no longer have to be provisioned for their full real loop to be managed.
 - Both realism settings start off. If you had them on before 0.5 they come back on by themselves. If you started during 0.5.x your vehicle counts will fall, and switching "Provision fleet for real travel time" back on restores them.
