@@ -38,43 +38,68 @@ Earlier in 0.5.0:
 
 Full detail in the changelog.
 
-Per line you opt in and set:
+---
 
-- a first departure time and peak / off-peak / night intervals (the global peak windows are configurable),
-- OR give a line its OWN peak hours: any line can override the global rush with two custom windows and its own peak interval, so a line serving a factory shift, a school run or a stadium can run its own rush hour while the rest of the network keeps to the city-wide one,
-- the mod then DERIVES how many vehicles the line needs to hold that headway and sizes the line to it, without touching the vehicle-count slider on any other line,
-- a terminus stop (timing point) where early vehicles are held to the scheduled departure, and where surplus vehicles retire — after finishing their loop and dropping passengers, not mid-route.
+🚌 Transit Timetables
 
-Select any stop to open a printed-timetable departure board for every line that serves it, listed from the first departure of the day. Day-only and night-only lines only show and run the intervals that apply to them, and a night line is scheduled inside the night window.
+Your buses don't run to a schedule. They run to a vibe.
 
-No timetable set = the line runs exactly like vanilla. Everything is controlled from the line's own info panel plus a floating departures board.
+One vehicle bunches up behind another, three arrive at once, then nothing for ten minutes. Transit Timetables replaces that with real departure times — the kind you could actually print on a sign.
 
-Posted times come from each line's REAL measured loop, not the game's estimate. The game's estimate is optimistic — it ignores the time vehicles lose braking, accelerating and loading passengers at every stop, and real loops measure up to 3x it — so times based on it drift ahead of reality. The mod measures each line as it runs and saves the result with your city, so posted times are right from the moment you load rather than after a day or two of learning. This used to be an optional setting; it is now simply how the mod works.
+🕐 Set a timetable in about ten seconds
 
-SETTINGS (a plain timetable needs none of them):
+Open any line, flip the timetable ON, and set:
 
-- "Vehicle counts": either the mod sizes each line's fleet to hold the headway you set, or you keep control. Because it sizes to the REAL measured loop, a stop-dense line needs roughly twice the vehicles the game's own estimate would suggest, so expect more vehicles than vanilla runs. Switch it to "I manage them" to hand every count back, whether you prefer the game's "Assigned Vehicles" slider or a dedicated fleet mod.
-- "Stop at every stop (even empty ones)" (free, off by default): by default a bus skips a stop where nobody boards or alights, so that stop isn't held to schedule; the terminus is now always honoured, and this extends that to every stop. Lines run a little slower.
-- "Maximum stop time" for buses and for rail (3 minutes each by default): how long a vehicle may keep waiting PAST its posted departure for passengers who are already boarding. It is a limit, not a target — a vehicle with nobody boarding still leaves exactly on its posted minute, and this setting never delays it by a second. Raise the rail value if you see people piling up on a busy platform: a train or metro exchanging a full platform takes far longer to load, and unlike a bus it can never skip a stop. Set it to 0 to leave on the dot and wait for nobody.
-- "Realistic Trips / slow-time compatibility" (ALPHA, off by default): keeps timing correct if you run a mod that lengthens the in-game day (Time2Work / Realistic Trips). Leave off otherwise.
+⏰ First departure of the day
 
-CLEAN UNINSTALL: Options has a "Remove all mod data from this save" button. It reverts every line to the base game and deletes the mod's data from your city, so you can uninstall with nothing left behind. It clears your timetables, so it asks first — and after confirming, let the game run for a moment before you save.
+📊 Peak / off-peak / night intervals — different frequencies for different hours
 
-Recommended: leave everything at its defaults. Raise "Maximum stop time" for rail if you see passengers piling up on a busy platform, and switch "Vehicle counts" to "I manage them" if you would rather own your fleet sizes yourself.
+📍 A terminus — your timing point, where early vehicles wait for their minute and surplus vehicles retire after finishing their loop, never dumping passengers mid-route
 
-KNOWN ISSUES:
+That's it. The mod works out how many vehicles the line needs and raises the game's vehicle cap so your service is never quietly throttled.
 
-- "Vehicles no longer un-bunch after removing the mod." The mod writes two values into a line's save data — an "unbunching factor" (an early pre-v0.2.3 build), and a "vehicle interval" it uses to size the fleet. If you remove or disable the mod WITHOUT first switching a line's timetable off, those values can stay frozen in the save (the base game never resets them), so vehicles leave a stop immediately without spacing out. FIXED as of v0.3.2.2: the mod now repairs both automatically on load, for every line, and safely — the vehicle interval is rebuilt from the line's own settings, so a count you set by hand with "Assigned Vehicles" is preserved. To repair an affected save: subscribe to v0.3.2.2 (or newer), load your city, then save. Normal unbunching returns, and you can keep or remove the mod afterwards.
+📋 A real departure board
 
-CREDITS: per-line custom peak windows (each line can override the global peak hours and run its own peak interval) were contributed by incconutwo. The per-vehicle schedule readout was suggested by ThisGuySucksAtCitys. Thank you both. Community bug reports have driven several releases, including the terminus stop fix, the mid-route spawn fix and the missed-trip catch-up.
+Click any stop to see a printed timetable — every line serving it, every departure, from the first bus of the day. Rename a line and the board updates to match.
 
-Source (open source, MIT): https://github.com/AmicusDeus/TransitTimetables
+Night lines show night times. Day-only lines don't pretend to run at 3am. It just makes sense.
 
-Localized into 11 languages (German, Spanish, French, Italian, Japanese, Korean, Polish, Portuguese-BR, Russian, Chinese Simplified &amp; Traditional). Translations are machine-generated — corrections welcome.
+🌟 Per-line rush hours
 
+Not every line rushes at the same time.
 
-Made with Claude Code's Opus 4.8 and Fable 5 models.
-	</LongDescription>
+Any line can override the city-wide peak with its own two peak windows and its own interval — so your factory shift line, school run, or stadium shuttle can run its own rush hour while the rest of the network keeps to the standard one.
+
+💙 This feature was contributed by [incconu_two](https://github.com/incconutwo) — thank you!
+
+⚡ Optional: make it honest
+
+The game thinks your metro loop takes 50 minutes. It really takes 150. It ignores braking, accelerating, and passengers actually boarding.
+
+🎯 Realistic travel time (free) — the mod measures your line's true loop as it runs and posts real times. Measurements are now saved with your city, so they survive quitting.
+
+🚏 Minimum stop time — buses 2 min, rail 5 min. A metro exchanging a full platform doesn't do it in two minutes.
+
+💰 Provision fleet — size lines to their real loop. Costs money. Worth it.
+
+🛑 Stop at every stop · 🤝 Hand vehicle counts to another mod · 🌙 Slow-time mod support
+
+🧹 Uninstall without a trace
+
+One button: "Remove all mod data from this save." Every line returns to vanilla, all mod data is deleted from your city. No residue, no regrets.
+
+🙏 Credits
+
+💙 Per-line custom peak windows — [incconu_two](https://github.com/incconutwo)
+
+Community bug reports have driven several releases: the forced terminus stop, the mid-route spawn fix, and missed-trip catch-up. Report things. They get fixed.
+
+🔗 [Source — open source, MIT](https://github.com/AmicusDeus/TransitTimetables)
+
+🌍 Localized into 11 languages (machine-translated — corrections welcome!)
+
+Disclaimer: Made and maintained with Claude Code Opus 4.8, Opus 5 and Fable 5 models.
+</LongDescription>
 	<!--Thumbnail-->
 	<Thumbnail Value="Properties/Thumbnail.png" />
 	<!--Screenshot, can be set multiple times.
@@ -84,10 +109,11 @@ Made with Claude Code's Opus 4.8 and Fable 5 models.
 	    Tag, ExternalLink and the dependency entries below. Keeping the files in the repo is what makes publishing
 	    safe: every publish now re-asserts them instead of wiping them.
 	    Upload order follows this order (they are renamed screenshot_01.., screenshot_02.. on upload). -->
-	<Screenshot Value="Properties/Screenshots/01-banner.jpg" />
-	<Screenshot Value="Properties/Screenshots/02-bus.jpg" />
-	<Screenshot Value="Properties/Screenshots/03-train.jpg" />
-	<Screenshot Value="Properties/Screenshots/04-options.jpg" />
+	<Screenshot Value="Properties/Screenshots/01-options-top.png" />
+	<Screenshot Value="Properties/Screenshots/02-options-bottom.png" />
+	<Screenshot Value="Properties/Screenshots/03-bus.jpg" />
+	<Screenshot Value="Properties/Screenshots/04-train.jpg" />
+	<Screenshot Value="Properties/Screenshots/05-banner.jpg" />
 	<!--Tag, can be set multiple times-->
 	<Tag Value="" />
 	<!--Link to the forum post where the mod can be discussed-->
