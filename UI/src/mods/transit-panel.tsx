@@ -413,7 +413,12 @@ const StopBoard = () => {
                             {e.term ? <div style={{ fontSize: "11rem", color: "rgb(120, 210, 130)" }}>★ {t("terminusBadge", "terminus")}</div> : null}
                             {e.lay ? (
                                 <div style={{ fontSize: "11rem", color: e.layOff ? "rgba(224, 186, 120, 0.5)" : "rgb(224, 186, 120)" }}>
-                                    ⏸ {e.layOff ? t("layoverOff", "layover (inactive)") : t("layoverBadge", "layover stop")}
+                                    {/* NO GLYPH. This carried a U+23F8 pause symbol, which the game's UI font does
+                                        not contain, so it drew a tofu box on every layover row (seen in two players'
+                                        screenshots). The terminus badge's ★ (U+2605) renders because it predates the
+                                        emoji blocks; anything from those blocks is a gamble here. The amber colour
+                                        already distinguishes this badge from the green terminus one. */}
+                                    {e.layOff ? t("layoverOff", "layover (inactive)") : t("layoverBadge", "layover stop")}
                                 </div>
                             ) : null}
                         </div>
