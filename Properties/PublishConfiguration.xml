@@ -127,7 +127,11 @@ Disclaimer: Made and maintained with Claude Code Opus 4.8, Opus 5 and Fable 5 mo
 	<!--Required DLC, can be set multiple times. Supported values are "Landmark Buildings", "San Fransisco Set", "Beach Properties", "Urban Promenades", "Modern Architecture"-->
 	<RequiredDLC Value="" />
 	<!--Change log for new version. Single line or multi line. Supports minimal markdown subset-->
+	<!--CURRENT VERSION ONLY. Paradox Mods keeps its own per-version changelog history (the store page lists
+	    every past version with its own date), so previous entries here are duplicated, not preserved, and they
+	    eat the 5000-character limit. Replace this block wholesale on every version bump. -->
 	<ChangeLog>
+
 v0.5.3.1 [BETA] - Scheduled layovers, and a localization fix
 
 - FIX: most of the panel was showing English no matter what language you play in. The mod has shipped translations for the vehicle status readout, the loop measurement lines and the terminus warnings, but those particular strings were never handed to the game's localization system, so every language quietly fell back to English. They are wired up now, and the wiring is derived from the string table rather than kept by hand, so a string cannot be missed this way again.
@@ -137,26 +141,6 @@ v0.5.3.1 [BETA] - Scheduled layovers, and a localization fix
 - The layover stop is always called at, even when nobody is waiting there, and it never doubles as the terminus. If its stop is deleted or the route stops serving it, the line panel says so and offers to remove it.
 
 - Note: a layover makes the round trip longer, so a line needs a few more vehicles to keep the same interval. That is only accounted for when Provision fleet for real travel time is on. The layover itself is never counted as the route being slower, so it does not distort the measured loop time.
-
-v0.5.3 [BETA] - The realism toggles are back
-
-- The checkboxes from before 0.5 are on the Options page again: "Manage vehicle count", "Provision fleet for real travel time" and "Realistic travel time". 0.5 folded them into one dropdown, and doing so removed the middle option: let the mod manage vehicle counts, but size them from the game's own estimate rather than the measured loop. That combination is back, so a high-frequency line can be managed without being provisioned for its full real loop.
-
-- Both realism settings start OFF. If you had them switched on before 0.5, that choice is still in your settings file and comes back by itself, so nothing changes for you. If you started using the mod during 0.5.x, where they were always on, your lines will size from the estimate again and your vehicle counts WILL FALL. Switch "Provision fleet for real travel time" back on to keep the 0.5.x behaviour.
-
-- A one-time notice explains this the first time you load a city that has timetables, and can switch both settings on for you. Dismissing it leaves your city exactly as it is.
-
-- FIX: posted stop times and vehicle counts are now worked out from the same measurement. v0.5.1 stopped vehicle counts being thrown off by a mistimed lap, but the posted times were still using the old averaging, so a line could be sized from one figure and timetabled from another.
-
-- Three settings that had only ever appeared in English, including the two stop-time limits, are now translated into all 11 supported languages, along with everything added in 0.5.2.
-
-v0.5.2.2 [BETA] - See how late a vehicle is running
-
-- NEW: select a bus, tram or train on a timetabled line and its info panel tells you where it stands against the schedule. At a stop it says when it departs, and if it is waiting there early it says so plainly rather than calling it a delay, because holding an early vehicle until its departure time is the whole point of a timetable. On the move it gives the next stop's due time, and only claims the vehicle is behind once that time has passed and it still has not arrived. (Requested by ThisGuySucksAtCitys - thank you.)
-
-- A vehicle that joined its line partway round, which is what happens when one leaves a depot, says it is not yet on the timetable. It has no scheduled departure to be measured against until it first reaches the terminus, so there is nothing honest to report before then.
-
-- While a line is still learning how long its route really takes, the panel says so, since those times will still move.
 	</ChangeLog>
 	<!--External link, can be set multiple times. supported types are "discord", "github", "youtube", "twitch", "x", "paypal", "patreon", "buymeacoffee", "kofi", "crowdin", "gitlab", "gofundme"-->
 	<ExternalLink Type="github" Url="https://github.com/AmicusDeus/TransitTimetables" />
