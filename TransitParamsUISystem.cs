@@ -645,8 +645,12 @@ namespace TransitTimetables
                     if (m_Dispatch != null && m_Dispatch.TryActiveLayover(line, out Entity layStop, out int layMin) && layStop == stop)
                     {
                         lay = layMin;
+                        // Both rows come from ONE slot set here, and the departure row REPLACES the one computed above:
+                        // dep from DeparturesAtStop is seeded independently and can print earlier than arr. See
+                        // LayoverTimes. Only when the dispatch has published an arrival — before that we leave the
+                        // ordinary (already layover-aware) dep row alone rather than invent a pairing.
                         if (stopWp != Entity.Null && m_Dispatch.TryPostedArrivalMinutes(stopWp, out int arrOff))
-                            arr = FormatTimesFromOffset(line, sch, ScheduleOf(line), nowMin, arrOff);
+                            LayoverTimes(line, sch, ScheduleOf(line), nowMin, arrOff, layMin, out arr, out dep);
                     }
                     // A layover SET on this stop but dropped by the dispatch (the effective terminus moved onto it)
                     // would otherwise be invisible AND unremovable — the component silently persists and reactivates
@@ -949,6 +953,40 @@ namespace TransitTimetables
         // buses once disagreed by ~45 minutes). The seed clamp keeps a stop whose first arrival is still ahead
         // (offset > now, early morning) advertising the real first vehicle rather than extrapolating yesterday's
         // sequence backwards across midnight.
+        // BOTH rows for the layover stop, from ONE set of slots.
+        //
+        // Formatting them as two independent calls to FormatTimesFromOffset is wrong, and wrong in a way that only
+        // shows up live (GameBurrow, issue #9): each call seeds itself at `now - itsOwnOffset`, so the departure list
+        // — whose offset is X larger — reaches one X further back and can pick up a slot the arrival list has already
+        // passed. Row k of the two lists is then a DIFFERENT vehicle, and while X is smaller than the headway the
+        // departure row prints times EARLIER than the arrival row. It self-corrects the moment the clock crosses the
+        // next slot boundary, which is exactly the "corrects itself after 10-60 seconds" that was reported.
+        //
+        // One slot set, two offsets: row k is the same vehicle in both rows by construction, and a departure can never
+        // precede its own arrival because it is literally that arrival plus X.
+        private void LayoverTimes(Entity line, TimetableSchedule sch, int schedule, int nowMin, int arrOff, int layMin,
+                                  out string arrivals, out string departures)
+        {
+            arrivals = "";
+            departures = "";
+            int seed = nowMin - arrOff;
+            if (seed < 0) seed = 0;
+            int[] slots = new int[6];
+            CustomPeakSchedule customSch = EntityManager.HasComponent<CustomPeakSchedule>(line)
+                ? EntityManager.GetComponentData<CustomPeakSchedule>(line) : CustomPeakSchedule.Default();
+            int n = ScheduleMath.Upcoming(S, sch, customSch, schedule, seed, slots, 6);
+            var a = new StringBuilder();
+            var d = new StringBuilder();
+            for (int k = 0; k < n; k++)
+            {
+                if (k > 0) { a.Append(", "); d.Append(", "); }
+                a.Append(ScheduleMath.FormatHm(slots[k] + arrOff));
+                d.Append(ScheduleMath.FormatHm(slots[k] + arrOff + layMin));
+            }
+            arrivals = a.ToString();
+            departures = d.ToString();
+        }
+
         private string FormatTimesFromOffset(Entity line, TimetableSchedule sch, int schedule, int nowMin, int offset)
         {
             int seed = nowMin - offset;
