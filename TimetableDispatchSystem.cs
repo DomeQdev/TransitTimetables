@@ -203,6 +203,20 @@ namespace TransitTimetables
         // cycle and stranded for a whole interval. A frame (not a minute) so comparisons are monotonic across midnight.
         // Keyed by vehicle Entity (globally unique); pruned each tick against m_LiveVehScratch so despawned buses drop.
         private readonly Dictionary<Entity, uint> m_RunSlotFrame = new Dictionary<Entity, uint>();
+        // WHICH POSTED ENTRY each vehicle is running, as an absolute schedule minute. A sibling of m_RunSlotFrame,
+        // written only on the terminus "asg" path, and read only to stop two vehicles of one line being handed the
+        // SAME departure (issue #16).
+        //
+        // Why a second dictionary instead of comparing m_RunSlotFrame values: two vehicles assigned to the same
+        // posted minute do NOT get the same frame. Each is assigned on a different 8-frame tick, so their slot
+        // frames differ by however many ticks elapsed between them - up to a full minute. An equality test on
+        // frames would therefore never fire, and a tolerance test needs a threshold that stops separating
+        // "same entry" from "adjacent entry" once the headway is short. The posted minute IS the thing being
+        // claimed, so it is what gets stored.
+        //
+        // Catch-up slots are deliberately NOT recorded: they are off-grid by construction (frame + cuDwell), not a
+        // posted entry, and that path already self-de-duplicates through m_LastSlotFrame.
+        private readonly Dictionary<Entity, int>  m_RunSlotMinute = new Dictionary<Entity, int>();
         private readonly HashSet<Entity> m_LiveVehScratch = new HashSet<Entity>();
 
         // Minimum stop dwell (minutes) for a bus that arrives ON its slot or LATE, so it still boards/offloads instead
@@ -463,7 +477,7 @@ namespace TransitTimetables
             m_Fpm = m_Timebase.FramesPerMinute;
             m_Um = m_Timebase.UnitMinutes;
             uint tbGen = m_Timebase.RegimeGeneration;
-            if (tbGen != m_TimebaseGen) { m_TimebaseGen = tbGen; m_RunSlotFrame.Clear(); m_LastSlotFrame.Clear(); }
+            if (tbGen != m_TimebaseGen) { m_TimebaseGen = tbGen; m_RunSlotFrame.Clear(); m_RunSlotMinute.Clear(); m_LastSlotFrame.Clear(); }
 
             // Clean-uninstall button (Options): one-shot wipe of every mod component + mutation, then bail this tick.
             // Runs regardless of the master switch, so a paused mod can still be cleaned out.
@@ -1097,6 +1111,7 @@ namespace TransitTimetables
             PruneToLive(m_RampSince, m_LiveScratch, m_StaleScratch);
             // Drop per-vehicle slots for buses that despawned/retired (m_LiveVehScratch = every live vehicle this tick).
             PruneToLive(m_RunSlotFrame, m_LiveVehScratch, m_StaleScratch);
+            PruneToLive(m_RunSlotMinute, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_ArrivedFrame, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_VehTerminusDepart, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_VehStopHold, m_LiveVehScratch, m_StaleScratch);
@@ -1327,6 +1342,29 @@ namespace TransitTimetables
                 Mod.log.Info(diag.ToString());
         }
 
+        // Is this posted entry already owned by ANOTHER live vehicle of the same line? The whole of issue #16 in
+        // one test. `self` is skipped so a vehicle re-evaluating its own visit can never be rejected against its
+        // own claim, which is the other half of the slotFromThisVisit guarantee above.
+        //
+        // Scans the line's own roster rather than consulting m_LastSlotFrame, which looks like the natural record
+        // and is not: that field holds only the SINGLE LATEST claim, so with three buses (A takes 10:20, B is
+        // pushed to 10:40) it reads 10:40, and a third bus asking about 10:20 is told it is free — duplicating A.
+        // It is also load-bearing for the catch-up detector, whose write can regress it to a past frame. One field,
+        // two contracts, is how the measurement-cliff latch happened.
+        private bool SlotMinuteClaimed(Entity self, int minute, HashSet<Entity> lineVehicles)
+        {
+            if (lineVehicles == null)
+                return false;
+            foreach (Entity other in lineVehicles)
+            {
+                if (other == self)
+                    continue;
+                if (m_RunSlotMinute.TryGetValue(other, out int owned) && owned == minute)
+                    return true;
+            }
+            return false;
+        }
+
         // Hold one stop's in-service boarding bus to its scheduled clock departure (the schedule shifted by offMin), or
         // release it on/after time. EVERY stop (terminus and intermediate) holds to its next scheduled slot: a bus that
         // arrives early waits for its clock minute; one that missed its slot rides the next one — a bounded, ONE-TIME
@@ -1429,6 +1467,11 @@ namespace TransitTimetables
                                 // Depart a min-dwell from NOW (like an on-slot/late bus): a near-future frame, not `frame`.
                                 slotFrame = frame + (uint)(cuDwell * m_Fpm);
                                 m_RunSlotFrame[veh] = slotFrame;
+                                // DROP any posted-entry claim. A catch-up slot is off-grid by construction, so this
+                                // vehicle no longer owns an entry — and leaving the previous run's claim behind would
+                                // reserve a departure nobody is running, blocking the next bus out of it for a whole
+                                // headway. Remove, never write: the catch-up minute is not a posted entry to claim.
+                                m_RunSlotMinute.Remove(veh);
                                 m_LastSlotFrame[line] = prevFrame > 0 ? (uint)prevFrame : frame;   // claim the slot we just covered
                                 // Clear the lap flag so the reassignment gate above ((lapped && frame >= slotFrame)) does
                                 // NOT re-fire while this bus is still boarding out its catch-up dwell. Without this, the
@@ -1466,18 +1509,66 @@ namespace TransitTimetables
 
                     if (!caughtUp)
                     {
-                        if (untilNext >= 0 && untilNext <= maxInterval)
+                        // ONE VEHICLE PER POSTED ENTRY (issue #16).
+                        //
+                        // Vanilla enforces this implicitly and we relied on it without knowing: a stop exposes ONE
+                        // BoardingVehicle, BeginBoarding refuses a second vehicle while the incumbent still carries
+                        // the Boarding flag, and OUR OWN hold is what keeps that flag set until the incumbent's
+                        // minute. So by the time another bus can board here, the clock has passed the slot and
+                        // NextDeparture returns a later one.
+                        //
+                        // A concurrent-boarding mod rotates BoardingVehicle among several buses at once, which
+                        // removes that exclusion. We tick every 8 frames against ~182 frames per minute, so ~23
+                        // assignment opportunities fall inside one minute: the rotation shows us bus A, then bus B,
+                        // and both compute the same NextDeparture and are handed the same departure. They then run
+                        // coupled for the whole loop and the next entry goes unserved.
+                        //
+                        // Deliberately NOT conditional on that mod being installed: there is a narrow vanilla window
+                        // too, because NextDeparture tests `t >= nowMinute`, so a successor that begins boarding
+                        // while the clock is still inside the departed slot's own minute anchors to the entry just
+                        // used. Rare, but the same bug.
+                        int cand = ScheduleMath.NextDeparture(s, sch, customSch, sched, nowMin);
+                        bool free = false;
+                        // Bounded walk forward through the grid. The window test is the EXISTING one, unchanged, and
+                        // stepping never widens it: a candidate past maxInterval is a clash, not a wider assignment.
+                        // Widening here would also require widening the terminus holdBound below, which is the
+                        // release-rather-than-freeze safety net, and that must not move.
+                        for (int k = 0; k < 4; k++)
+                        {
+                            int u = cand - nowMin;
+                            if (u < 0 || u > maxInterval) break;
+                            if (!SlotMinuteClaimed(veh, cand, lineVehicles)) { untilNext = u; free = true; break; }
+                            int nxt = ScheduleMath.NextDeparture(s, sch, customSch, sched, cand + 1);
+                            if (nxt <= cand) break;   // NextDeparture's own "return first" fallback: stop walking
+                            cand = nxt;
+                        }
+                        if (free)
                         {
                             slotFrame = frame + (uint)(untilNext * m_Fpm);
                             m_RunSlotFrame[veh] = slotFrame;
+                            m_RunSlotMinute[veh] = cand;                 // the entry this vehicle now owns
                             // Claim this (future) slot so the next bus doesn't read it as missed. Monotonic: never regress.
                             if (!m_LastSlotFrame.TryGetValue(line, out uint cur) || slotFrame > cur) m_LastSlotFrame[line] = slotFrame;
                             slotSrc = "asg";
+                        }
+                        else if (untilNext >= 0 && untilNext <= maxInterval)
+                        {
+                            // CLASH: every entry inside the window is already owned by another vehicle on this line.
+                            // Write NOTHING and leave — no slot, no claim, no departure frame. This resolves itself
+                            // within one headway: once the incumbent's minute passes, NextDeparture returns the
+                            // following entry and this bus is assigned cleanly on a later tick.
+                            //
+                            // Deliberately NOT the "edge" branch below. That path clears the slot and makes the
+                            // vehicle dwelling, which force-departs it on a min-dwell — the bunching this whole
+                            // change exists to prevent, arriving through a different door.
+                            diag?.Append(" [off").Append(offMin).Append(tag).Append(":clash]");
+                            return;
                         }
                         else
                         {
                             // No usable slot soon (operating-window edge): don't latch a far/garbage slot — release now.
                             m_RunSlotFrame.Remove(veh);
+                            m_RunSlotMinute.Remove(veh);
                             slotFrame = frame;
                             slotSrc = "edge";
                         }
@@ -1803,7 +1894,7 @@ namespace TransitTimetables
             m_LastFleet.Clear(); m_PendingRetire.Clear(); m_LapServed.Clear(); m_LapFront.Clear();
             m_LineLoopEma.Clear(); m_LineLoopSamples.Clear(); m_LineLoopMin.Clear(); m_LineRejectStreak.Clear();
             m_LastDur.Clear(); m_DurStable.Clear(); m_LastSlotFrame.Clear(); m_ShrinkSince.Clear(); m_RampSince.Clear();
-            m_RunSlotFrame.Clear(); m_ArrivedFrame.Clear(); m_VehTerminusDepart.Clear(); m_Committed.Clear();
+            m_RunSlotFrame.Clear(); m_RunSlotMinute.Clear(); m_ArrivedFrame.Clear(); m_VehTerminusDepart.Clear(); m_Committed.Clear();
             m_VehStopHold.Clear(); m_VehHoldFrames.Clear(); m_PostedOffset.Clear(); m_PostedArrival.Clear(); m_PostedFleet.Clear();
             Mod.log.Info($"[SelfTest] clean uninstall: reverted {n} line(s) to vanilla and removed all mod components. " +
                          "Save your city; the mod can now be removed with no residue.");
