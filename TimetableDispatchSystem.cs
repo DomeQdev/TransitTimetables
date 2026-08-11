@@ -313,6 +313,13 @@ namespace TransitTimetables
         private const int   kFleetCap        = 150;
         // Hard ceiling on how much of a stop's offset may extend the hold bound (minutes). See HoldStop's clamp.
         private const int   kMaxHoldSlackMinutes = 15;
+        // How many grid entries past the first the terminus assignment may walk when the nearer ones are already
+        // owned by other vehicles of the same line. Each step costs the vehicle one more headway of waiting, which
+        // is the honest price of "you are on the departure after theirs", so this is deliberately small: it bounds
+        // how long a contended bus can be asked to wait, not how many buses can be handled. Three covers a terminus
+        // holding four of a line's vehicles at once; beyond that the bus is left unassigned and picks up a slot on
+        // its next visit, which is the safe direction.
+        private const int   kMaxSlotSteps = 3;
 
         protected override void OnCreate()
         {
@@ -1529,14 +1536,25 @@ namespace TransitTimetables
                         // used. Rare, but the same bug.
                         int cand = ScheduleMath.NextDeparture(s, sch, customSch, sched, nowMin);
                         bool free = false;
-                        // Bounded walk forward through the grid. The window test is the EXISTING one, unchanged, and
-                        // stepping never widens it: a candidate past maxInterval is a clash, not a wider assignment.
-                        // Widening here would also require widening the terminus holdBound below, which is the
-                        // release-rather-than-freeze safety net, and that must not move.
-                        for (int k = 0; k < 4; k++)
+                        // Bounded walk forward through the grid.
+                        //
+                        // THE WINDOW HAS TO GROW WITH THE WALK, and the first version of this got it wrong in a way
+                        // that made the whole feature inert. The acceptance test was the untouched `u <= maxInterval`.
+                        // On a uniform headway H that IS maxInterval: the first candidate is at most H away, the next
+                        // entry is a further H, so the stepped candidate always exceeded the bound and every contended
+                        // bus fell through to the clash path and ran with no timetable at all. Reported live by
+                        // GameBurrow, who observed exactly that and asked for the next free slot instead — which is
+                        // what this was always supposed to do.
+                        //
+                        // So the bound is maxInterval per STEP TAKEN. Step 0 keeps the historical window exactly;
+                        // each accepted step buys one more headway, because "you are on the departure after the one
+                        // another bus holds" legitimately means waiting that much longer. Still hard-bounded: at most
+                        // kMaxSlotSteps extra headways, so this can never become an open-ended wait.
+                        int stepsTaken = 0;
+                        for (; stepsTaken <= kMaxSlotSteps; stepsTaken++)
                         {
                             int u = cand - nowMin;
-                            if (u < 0 || u > maxInterval) break;
+                            if (u < 0 || u > maxInterval * (stepsTaken + 1)) break;
                             if (!SlotMinuteClaimed(veh, cand, lineVehicles)) { untilNext = u; free = true; break; }
                             int nxt = ScheduleMath.NextDeparture(s, sch, customSch, sched, cand + 1);
                             if (nxt <= cand) break;   // NextDeparture's own "return first" fallback: stop walking
@@ -1629,10 +1647,27 @@ namespace TransitTimetables
             // freeze at an intermediate kerb with passengers aboard — exactly the v0.2.1 bug, re-entered through the
             // front door. The cap bounds the worst case while still covering legitimate far-stop holds.
             // The terminus keeps the strict one-headway bound: its offset is 0 and its slot is grid-derived.
+            //
+            // EXCEPT when this vehicle owns a grid entry further out because the nearer ones were taken. A flat
+            // one-headway bound would clamp exactly that hold and force-depart the bus on the very next tick — the
+            // assignment path would keep handing out stepped slots and this net would keep throwing them away, so
+            // the feature would look like it did nothing while quietly bunching the buses it was meant to separate.
+            // Note the tick that assigns is not the tick that clamps: a later pass takes the `keep` branch and never
+            // recomputes untilNext, so the bound has to be derivable from stored state, which is what the claimed
+            // minute is for. The wait it authorises is bounded by construction — the entry came from the grid walk
+            // above, which cannot exceed kMaxSlotSteps headways.
             // The layover stop's own X is a LEGITIMATE wait on top of the structural bound — an on-time vehicle there
             // holds for X plus its earliness by design — so it gets its own bound term rather than competing with the
             // slack cap. The travel part of the slack is offMin MINUS the layover (offMin at that stop includes X).
-            int holdBound = isTerminus ? maxInterval
+            int termBound = maxInterval;
+            if (isTerminus && m_RunSlotMinute.TryGetValue(veh, out int ownedMin))
+            {
+                // Minutes this vehicle is legitimately waiting for the entry it owns, plus the usual rounding slack.
+                int ownedWait = ownedMin - nowMin;
+                if (ownedWait > termBound) termBound = System.Math.Min(ownedWait, maxInterval * (kMaxSlotSteps + 1));
+                termBound += kMaxHoldSlackMinutes;
+            }
+            int holdBound = isTerminus ? termBound
                 : maxInterval + System.Math.Min(offMin - layoverAtStop, kMaxHoldSlackMinutes) + layoverAtStop;
             bool overrun = until > holdBound;
             bool hold = dframes > 0 && !overrun;
@@ -1640,7 +1675,7 @@ namespace TransitTimetables
             // once releases stop: a run of these at early stops means the additive ladder is wrong for that line.
             // The layover term is exempted, or a working layover longer than one headway would log "residual shape
             // error" on every single visit — a false alarm on the feature's normal path.
-            if (until > maxInterval + layoverAtStop && frame - m_LastClampWarn >= 16384u)
+            if (until > holdBound + layoverAtStop && frame - m_LastClampWarn >= 16384u)
             {
                 m_LastClampWarn = frame;
                 Mod.log.Warn($"[SelfTest] long hold: until={until}m exceeds headway={maxInterval}m at off={offMin} " +
