@@ -295,6 +295,13 @@ namespace TransitTimetables
         // reads the SAME walk the vehicles are held to; deriving departure-minus-X in the UI would be the second
         // independent derivation that once put the board ~45 minutes from the buses.
         private readonly Dictionary<Entity, int>    m_PostedArrival = new Dictionary<Entity, int>();   // layover waypoint -> arrival minutes
+        // The RETURN to the terminus: terminus waypoint -> the completed circuit in minutes. m_PostedOffset holds 0 for
+        // the terminus, which is its DEPARTURE and is what the board wants (a board lists departures). A vehicle on the
+        // inbound leg carries Target == this same waypoint, so anything reading that 0 as an ARRIVAL time reports the
+        // run's own departure as the next stop's due time. Deliberately NOT folded into m_PostedArrival: that one is
+        // documented as "the active layover waypoint only", and the prune comment already leans on that meaning. One
+        // field, two contracts, is how the measurement-cliff latch happened.
+        private readonly Dictionary<Entity, int>    m_PostedTerminusArrival = new Dictionary<Entity, int>();
         // Same contract for the vehicle count: the panel shows the number the dispatch SETTLED on, after the cap, the
         // shrink hysteresis and the stability gate. Recomputing it in the UI (as it did) skipped all three, so the
         // panel could advertise a count the dispatch was actively refusing to apply.
@@ -1140,6 +1147,12 @@ namespace TransitTimetables
                 foreach (Entity wpKey in m_PostedArrival.Keys)
                     if (!EntityManager.Exists(wpKey)) m_StaleScratch.Add(wpKey);
                 for (int i = 0; i < m_StaleScratch.Count; i++) m_PostedArrival.Remove(m_StaleScratch[i]);
+                // The terminus-arrival sibling is waypoint-keyed on the same terms. A MOVED terminus is already
+                // self-cleaned by the walk's j>=1 Remove; this catches waypoints deleted outright between walks.
+                m_StaleScratch.Clear();
+                foreach (Entity wpKey in m_PostedTerminusArrival.Keys)
+                    if (!EntityManager.Exists(wpKey)) m_StaleScratch.Add(wpKey);
+                for (int i = 0; i < m_StaleScratch.Count; i++) m_PostedTerminusArrival.Remove(m_StaleScratch[i]);
             }
 
             lines.Dispose();
@@ -1308,6 +1321,12 @@ namespace TransitTimetables
                 // Remove keeps a moved/cleared layover from leaving a stale arrival behind (self-cleans in one walk).
                 if (layAtThis > 0) m_PostedArrival[wp] = offArr;
                 else m_PostedArrival.Remove(wp);
+                // Same self-cleaning rule for the terminus arrival, and it is load-bearing rather than tidy: if the
+                // player MOVES the terminus, the old waypoint still exists, so the periodic stale scan never collects
+                // it, and a vehicle inbound to what is now an ordinary stop would be given a whole lap as its offset.
+                // j==0 is the current terminus and is rewritten after the walk. (Waypoints are route-owned, so this
+                // cannot delete another line's entry even where two lines share a physical stop.)
+                if (j >= 1) m_PostedTerminusArrival.Remove(wp);
                 // NO MONOTONIC FLOOR HERE — one was added in v0.4.1 and REMOVED again; do not put it back.
                 // The intent was sound (a later stop cannot legitimately be posted earlier than an earlier one), but a
                 // floor is a RUNNING MAXIMUM: a single stop with a badly inflated measured value propagates that value
@@ -1343,6 +1362,18 @@ namespace TransitTimetables
                 // its own offset. Omitting this is what made downstream stops depart a dwell-time early.
                 if (j >= 1 && EntityManager.HasComponent<VehicleTiming>(wp))
                 { offUnits += stopDur; timedPassed++; } // ...and step the ladder, in lockstep with the estimate
+            }
+
+            // CLOSE THE CIRCUIT. The last iteration added the leg back to the terminus, so offUnits now spans a whole
+            // lap — a value the walk used to compute and throw away. Publish it as the terminus's ARRIVAL, through the
+            // SAME expression the stop offsets used above (same ladder, same scale, same layover carry), so it can
+            // never disagree with the board or with what the vehicles are held to. Deriving it separately from the
+            // measured loop would be the second independent derivation that once put the board ~45 minutes from the
+            // buses. Not published when the walk produced nothing, so a consumer can tell "unknown" from "zero".
+            {
+                Entity termWp = wps[start].m_Waypoint;
+                int loopArr = (int)System.Math.Round(offUnits * m_Um * shrinkScale + timedPassed * perStopExtraMin) + layoverCarry;
+                if (termWp != Entity.Null && loopArr > 0) m_PostedTerminusArrival[termWp] = loopArr;
             }
 
             if (diag != null)
@@ -1931,6 +1962,7 @@ namespace TransitTimetables
             m_LastDur.Clear(); m_DurStable.Clear(); m_LastSlotFrame.Clear(); m_ShrinkSince.Clear(); m_RampSince.Clear();
             m_RunSlotFrame.Clear(); m_RunSlotMinute.Clear(); m_ArrivedFrame.Clear(); m_VehTerminusDepart.Clear(); m_Committed.Clear();
             m_VehStopHold.Clear(); m_VehHoldFrames.Clear(); m_PostedOffset.Clear(); m_PostedArrival.Clear(); m_PostedFleet.Clear();
+            m_PostedTerminusArrival.Clear();
             Mod.log.Info($"[SelfTest] clean uninstall: reverted {n} line(s) to vanilla and removed all mod components. " +
                          "Save your city; the mod can now be removed with no residue.");
         }
@@ -2224,11 +2256,28 @@ namespace TransitTimetables
                 return false;                                  // no slot: not on the timetable yet
 
             // The stop it is heading for. Same offset table the board and the holds use.
-            int offMin = 0;
-            if (EntityManager.HasComponent<Target>(veh))
+            //
+            // HONOUR THE LOOKUP. This used to discard TryGetValue's result, so a MISS left offMin at 0 and was
+            // indistinguishable from a real 0 — and the terminus's real offset IS 0. Target is not always a posted
+            // waypoint: ReturnToDepot points it at the depot building, and the walk has not run for a line in its
+            // first tick after a load. Reporting nothing beats reporting a number we did not compute.
+            Entity wp = EntityManager.HasComponent<Target>(veh)
+                ? EntityManager.GetComponentData<Target>(veh).m_Target : Entity.Null;
+            if (wp == Entity.Null || !m_PostedOffset.TryGetValue(wp, out int offMin))
+                return false;
+            // EN ROUTE the scheduled event is the stop's ARRIVAL; once boarding it is the DEPARTURE. They differ at
+            // exactly two places, and both publish an arrival from the walk: the layover stop (arrival + X) and the
+            // terminus (departure 0, arrival a whole lap). Reading the terminus's 0 while inbound is what printed
+            // "due at 02:00, running 277 min behind" on a lap that had itself departed at 02:00 — the due time was
+            // the run's own departure and the lateness was simply its elapsed lap. A vehicle boarding AT the terminus
+            // is a different case and already correct: its slot has been reassigned to its next departure, so 0 is
+            // exactly right and the substitution must not apply.
+            bool boarding = EntityManager.HasComponent<PublicTransport>(veh)
+                && (EntityManager.GetComponentData<PublicTransport>(veh).m_State & PublicTransportFlags.Boarding) != 0;
+            if (!boarding)
             {
-                Entity wp = EntityManager.GetComponentData<Target>(veh).m_Target;
-                if (wp != Entity.Null) m_PostedOffset.TryGetValue(wp, out offMin);
+                if (m_PostedTerminusArrival.TryGetValue(wp, out int termArr)) offMin = termArr;
+                else if (m_PostedArrival.TryGetValue(wp, out int layArr)) offMin = layArr;
             }
             long sched = (long)slotFrame + (long)(offMin * m_Fpm);
             uint frame = m_Sim.frameIndex;
