@@ -37,6 +37,11 @@ namespace TransitTimetables
         private int m_SelTtTerminus;                // 0 chosen+usable, 1 never chosen, 2 chosen but no longer usable
         private int m_SelTtLayover;                 // 0 none, 1 active, 2 blocked (it IS the terminus), 3 orphaned (off-route)
         private int m_SelTtLayoverMin;              // the configured X, so the panel can name it while warning
+        // Stop rules set on stops this line no longer serves. The stop board can only offer controls on a row it
+        // lists, and an orphaned rule's stop produces no row — so without this the setting would be invisible AND
+        // unremovable, and would spring back to life if the route were ever edited back. Same reasoning, same shape
+        // as the layover's state 3.
+        private int m_SelTtRuleOrphans;
         private int m_SelSchedule = 2;              // RouteSchedule: 0=Day, 1=Night, 2=DayAndNight (which intervals apply)
         private string m_PeakHours = "", m_NightHours = "";
         private GetterValueBinding<bool> m_SelHasB, m_SelTtEnabledB;
@@ -44,6 +49,7 @@ namespace TransitTimetables
         private GetterValueBinding<string> m_SelTtNextB, m_PeakHoursB, m_NightHoursB, m_SelTtRealInfoB, m_SelVehInfoB;
         private GetterValueBinding<int> m_SelTtTerminusB;
         private GetterValueBinding<int> m_SelTtLayoverB, m_SelTtLayoverMinB;
+        private GetterValueBinding<int> m_SelTtRuleOrphansB;
         // Per-line custom peak (PR #5): enabled + interval + two hour windows.
         private bool m_SelCustomPeakEnabled;
         private int m_SelCustomPeakInterval = 5, m_SelCustomPeakStart1 = 7, m_SelCustomPeakEnd1 = 9, m_SelCustomPeakStart2 = 16, m_SelCustomPeakEnd2 = 18;
@@ -108,6 +114,7 @@ namespace TransitTimetables
             m_SelTtTerminusB = new GetterValueBinding<int>(Group, "selTtTerminus", () => m_SelTtTerminus);
             m_SelTtLayoverB = new GetterValueBinding<int>(Group, "selTtLayover", () => m_SelTtLayover);
             m_SelTtLayoverMinB = new GetterValueBinding<int>(Group, "selTtLayoverMin", () => m_SelTtLayoverMin);
+            m_SelTtRuleOrphansB = new GetterValueBinding<int>(Group, "selTtRuleOrphans", () => m_SelTtRuleOrphans);
             m_SelVehInfoB = new GetterValueBinding<string>(Group, "selVehInfo", () => m_SelVehInfo ?? "");
             m_SelCustomPeakEnabledB = new GetterValueBinding<bool>(Group, "selCustomPeakEnabled", () => m_SelCustomPeakEnabled);
             m_SelCustomPeakIntervalB = new GetterValueBinding<int>(Group, "selCustomPeakInterval", () => m_SelCustomPeakInterval);
@@ -136,6 +143,7 @@ namespace TransitTimetables
             AddBinding(m_SelTtTerminusB);
             AddBinding(m_SelTtLayoverB);
             AddBinding(m_SelTtLayoverMinB);
+            AddBinding(m_SelTtRuleOrphansB);
             AddBinding(m_SelVehInfoB);
             AddBinding(m_SelCustomPeakEnabledB);
             AddBinding(m_SelCustomPeakIntervalB);
@@ -184,6 +192,17 @@ namespace TransitTimetables
                 if (m_LastLine != Entity.Null && EntityManager.Exists(m_LastLine)
                     && EntityManager.HasComponent<LineLayover>(m_LastLine))
                 { EntityManager.RemoveComponent<LineLayover>(m_LastLine); m_UiDirty = true; }
+            }));
+            // Per-stop boarding rule for one board row's (line, stop): 0 normal, 1 set-down only, 2 pick-up only,
+            // 3 technical. See LineStopRule.
+            AddBinding(new TriggerBinding<int, int>(Group, "setStopRuleRow", SetStopRuleRow));
+            // Drop the OPEN line's rules on stops it no longer serves — the only way to reach them, since the stop
+            // board cannot list a row for a stop that left the route.
+            AddBinding(new TriggerBinding(Group, "clearSelRuleOrphans", () =>
+            {
+                if (m_LastLine != Entity.Null && EntityManager.Exists(m_LastLine)
+                    && StopRules.ClearOrphans(EntityManager, m_LastLine) > 0)
+                    m_UiDirty = true;
             }));
         }
 
@@ -288,6 +307,40 @@ namespace TransitTimetables
             else EntityManager.AddComponentData(line, lay);
         }
 
+        // Set one board row's per-stop boarding rule (mode per LineStopRule; 0 clears it).
+        //
+        // Guarded to TIMETABLED lines only, exactly like SetLayoverRow: the board lists untimetabled lines too, and a
+        // rule set on one would be save residue the player could not see. (The CleanUninstall sweep does cover them —
+        // this guard is about not creating the situation in the first place.)
+        //
+        // The TERMINUS is refused. Every vehicle is held there for its scheduled departure and surplus vehicles retire
+        // there after dumping their passengers; closing boarding or alighting at that stop would strand the line's
+        // whole reason for existing, and a technical stop would additionally sever the route at its own anchor. The
+        // button is hidden on the terminus row, so this is the belt to that braces — the effective terminus can move
+        // under us via the first-boarding-stop fallback, the same way it can for a layover.
+        private void SetStopRuleRow(int i, int mode)
+        {
+            if (i < 0 || i >= m_BoardRows.Count)
+                return;
+            Entity line = m_BoardRows[i].line;
+            Entity stop = m_BoardRows[i].stop;
+            if (line == Entity.Null || stop == Entity.Null || !EntityManager.HasComponent<TimetableSchedule>(line))
+                return;
+            if (mode < LineStopRule.None || mode > LineStopRule.Technical)
+                return;
+            if (mode != LineStopRule.None)
+            {
+                TimetableSchedule sch = EntityManager.GetComponentData<TimetableSchedule>(line);
+                Entity termWp = TerminusWaypoint(line, sch);
+                Entity termStop = termWp != Entity.Null && EntityManager.HasComponent<Connected>(termWp)
+                    ? EntityManager.GetComponentData<Connected>(termWp).m_Connected : Entity.Null;
+                if (termStop == stop)
+                    return;
+            }
+            StopRules.SetMode(EntityManager, line, stop, (byte)mode);
+            m_UiDirty = true;
+        }
+
         // Point a timetabled line's terminus at a stop it serves. No-op if the line has no timetable or already points there.
         private void SetLineTerminus(Entity line, Entity stop)
         {
@@ -300,6 +353,12 @@ namespace TransitTimetables
                 sch.m_TerminusStop = stop;
                 EntityManager.SetComponentData(line, sch);
             }
+            // A stop cannot be both the anchor and restricted: the terminus is where every vehicle is held for its
+            // scheduled departure and where surplus vehicles retire, so a rule closing it would strangle the line.
+            // The enforcement already refuses to apply one there (StopRuleSystem, "terminus wins"); clearing it here
+            // means the ordinary way of creating the conflict — pointing the terminus at a stop that already had a
+            // rule — resolves cleanly instead of leaving a dimmed, inert setting behind.
+            StopRules.SetMode(EntityManager, line, stop, LineStopRule.None);
         }
 
         private static int Clamp(int v, int lo, int hi) => v < lo ? lo : (v > hi ? hi : v);
@@ -375,6 +434,7 @@ namespace TransitTimetables
             m_SelTtTerminusB.Update();
             m_SelTtLayoverB.Update();
             m_SelTtLayoverMinB.Update();
+            m_SelTtRuleOrphansB.Update();
             m_SelVehInfoB.Update();
             m_SelCustomPeakEnabledB.Update();
             m_SelCustomPeakIntervalB.Update();
@@ -461,6 +521,7 @@ namespace TransitTimetables
                 m_SelTtRealInfo = s.Enabled ? BuildRealInfo(sel, dur, um) : "";
                 m_SelTtTerminus = TerminusState(sel, sch);
                 m_SelTtLayover = LayoverState(sel, sch, out m_SelTtLayoverMin);
+                m_SelTtRuleOrphans = StopRules.CountOrphans(EntityManager, sel);
                 Entity term = TerminusWaypoint(sel, sch);
                 // No departure predictions while the master switch is off — buses run vanilla, so posting scheduled
                 // times would mislead. The config above stays visible/editable; only the live prediction is suppressed.
@@ -471,7 +532,7 @@ namespace TransitTimetables
                 m_SelTtEnabled = false;
                 m_SelTtFirst = 300; m_SelTtPeak = 8; m_SelTtOffPeak = 12; m_SelTtNight = 30;
                 m_SelTtInterval = 0; m_SelTtFleet = 0; m_SelTtNext = ""; m_SelTtRealInfo = ""; m_SelTtTerminus = 0;
-                m_SelTtLayover = 0; m_SelTtLayoverMin = 0;
+                m_SelTtLayover = 0; m_SelTtLayoverMin = 0; m_SelTtRuleOrphans = 0;
                 m_SelCustomPeakEnabled = false; m_SelCustomPeakInterval = 5;
                 m_SelCustomPeakStart1 = 7; m_SelCustomPeakEnd1 = 9; m_SelCustomPeakStart2 = 16; m_SelCustomPeakEnd2 = 18;
             }
@@ -617,6 +678,7 @@ namespace TransitTimetables
                 int lay = 0;        // this row's stop is its line's active layover ("Terminus B"): X minutes
                 string arr = "";    // ...and these are its pre-layover arrivals (departures = the ordinary dep list)
                 bool layOff = false; // a layover is SET on this stop but the dispatch dropped it (inactive)
+                int rule = 0;       // per-stop boarding rule for THIS line at THIS stop (LineStopRule mode)
                 if (tt)
                 {
                     Entity terminusWp = TerminusWaypoint(line, sch);
@@ -637,6 +699,9 @@ namespace TransitTimetables
                     Entity stopWp = WaypointForStop(line, stop);
                     dep = DeparturesAtStop(line, sch, terminusWp, stopWp, ScheduleOf(line), nowMin, out est);
                     term = termStop != Entity.Null && termStop == stop;
+                    // AFTER the re-anchor above, never before: on a multi-platform station the row can still move to
+                    // another platform here, and the rule belongs to whichever stop the row ends up representing.
+                    rule = StopRules.ModeForStop(EntityManager, line, stop);
                     // Layover row ("Terminus B"): only when THIS stop is the line's ACTIVE layover — TryActiveLayover
                     // applies the dispatch's own validity rules, so the board can never advertise a layover the
                     // dispatch has dropped (deleted stop, edited route, or the terminus fallback landing on it).
@@ -676,6 +741,10 @@ namespace TransitTimetables
                       .Append(",\"a\":\"").Append(arr).Append('"');
                     if (layOff) sb.Append(",\"layOff\":true");
                 }
+                // A rule on the row that is ALSO the terminus is set but not enforced (StopRuleSystem drops it —
+                // terminus wins). Flagged so the board can show it dimmed with a remove button, rather than either
+                // lying about it or hiding it into unreachability.
+                if (rule > 0) sb.Append(",\"rule\":").Append(rule).Append(term ? ",\"ruleOff\":true" : "");
                 sb.Append(",\"d\":\"").Append(dep).Append("\"}");
             }
             sb.Append(']');

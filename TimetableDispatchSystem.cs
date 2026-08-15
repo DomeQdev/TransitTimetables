@@ -65,6 +65,8 @@ namespace TransitTimetables
         // m_LineQuery because that one requires TimetableSchedule and so misses lines that were damaged by an old
         // version and are no longer timetabled. See GlobalHealUnbunching.
         private EntityQuery m_HealQuery;
+        // Lines carrying per-stop boarding rules, timetabled or not — the clean-uninstall sweep (see OnCreate).
+        private EntityQuery m_StopRuleQuery;
         // Set on every game/save load; the next OnUpdate runs the global unbunching heal once, then clears it. Init true
         // so the sweep still fires if the system is created AFTER OnGameLoadingComplete already ran (mod-loads-late).
         private bool m_GlobalHealPending = true;
@@ -328,6 +330,15 @@ namespace TransitTimetables
             m_HealQuery = GetEntityQuery(new EntityQueryDesc
             {
                 All = new[] { ComponentType.ReadWrite<TransportLine>(), ComponentType.ReadOnly<PrefabRef>() },
+                None = new[] { ComponentType.ReadOnly<Deleted>(), ComponentType.ReadOnly<Game.Tools.Temp>() },
+            });
+            // Every line carrying stop rules, timetabled or not. CleanUninstall's main sweep runs over m_LineQuery,
+            // which requires TimetableSchedule — so a line whose timetable was switched off AFTER a rule was set on it
+            // would keep the buffer forever and the "no residue" promise would be false. This query is what makes the
+            // uninstall complete.
+            m_StopRuleQuery = GetEntityQuery(new EntityQueryDesc
+            {
+                All = new[] { ComponentType.ReadOnly<LineStopRule>() },
                 None = new[] { ComponentType.ReadOnly<Deleted>(), ComponentType.ReadOnly<Game.Tools.Temp>() },
             });
         }
@@ -1696,7 +1707,14 @@ namespace TransitTimetables
                 bool approachingLayover = layoverWaypoint != Entity.Null
                     && EntityManager.HasComponent<Target>(veh)
                     && EntityManager.GetComponentData<Target>(veh).m_Target == layoverWaypoint;
-                if (!(everyStop || approachingTerminus || approachingLayover))
+                // A TECHNICAL stop is called at unconditionally — that is half of what the mode means ("the vehicle
+                // stops here regardless"). It has to be forced for a stronger reason than the terminus does: the rule
+                // has already emptied the vehicle and closed boarding (StopRuleSystem cuts the pathfind edges), so
+                // there is BY CONSTRUCTION never any demand here and vanilla would roll past every single time.
+                bool approachingTechnical = EntityManager.HasComponent<Target>(veh)
+                    && StopRules.ModeForWaypoint(EntityManager, line,
+                           EntityManager.GetComponentData<Target>(veh).m_Target) == LineStopRule.Technical;
+                if (!(everyStop || approachingTerminus || approachingLayover || approachingTechnical))
                     continue;
                 forced++;
                 if ((pt.m_State & PublicTransportFlags.RequireStop) == 0)
@@ -1796,8 +1814,16 @@ namespace TransitTimetables
                 if (EntityManager.HasComponent<LineLayover>(line)) ecb.RemoveComponent<LineLayover>(line);
                 n++;
             }
+            // Stop rules, over their OWN query: a line that was un-timetabled after a rule was set on it is not in
+            // m_LineQuery at all, so the loop above cannot reach it. Removing the buffer is the whole revert — the
+            // restriction itself lives only in the pathfind graph, and StopRuleSystem hands those edges back to
+            // vanilla on its next tick when it sees the rules gone.
+            NativeArray<Entity> ruled = m_StopRuleQuery.ToEntityArray(Allocator.Temp);
+            for (int i = 0; i < ruled.Length; i++)
+                ecb.RemoveComponent<LineStopRule>(ruled[i]);
             ecb.Playback(EntityManager);
             ecb.Dispose();
+            ruled.Dispose();
             lines.Dispose();
             // Forget ALL in-memory tracking so nothing re-applies to the now-vanilla lines.
             m_LastFleet.Clear(); m_PendingRetire.Clear(); m_LapServed.Clear(); m_LapFront.Clear();
@@ -2208,6 +2234,21 @@ namespace TransitTimetables
                     return;
                 }
             }
+        }
+
+        // The stop this line's timetable is ACTUALLY anchored to — the player's choice while it is still usable, else
+        // the first-boarding-stop fallback. Exposed so other systems can ask instead of re-deriving it: this
+        // resolution already exists in three places (here, the panel's TerminusWaypoint, the board), and every extra
+        // copy is another chance for the UI and the simulation to disagree about where a line terminates.
+        // Entity.Null when the line carries no timetable or has no boardable stop at all.
+        public Entity EffectiveTerminusStop(Entity line)
+        {
+            if (line == Entity.Null || !EntityManager.Exists(line)
+                || !EntityManager.HasComponent<TimetableSchedule>(line)
+                || !EntityManager.HasBuffer<RouteWaypoint>(line))
+                return Entity.Null;
+            FindTerminus(line, EntityManager.GetComponentData<TimetableSchedule>(line), out Entity stop, out _);
+            return stop;
         }
 
         // Resolve this line's layover ("Terminus B") to a usable (stop, waypoint, minutes) triple. False when there is

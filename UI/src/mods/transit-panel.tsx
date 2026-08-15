@@ -20,6 +20,9 @@ const selTtRealInfo$ = bindValue<string>(G, "selTtRealInfo", "");
 const selTtTerminus$ = bindValue<number>(G, "selTtTerminus", 0);
 const selTtLayover$ = bindValue<number>(G, "selTtLayover", 0);
 const selTtLayoverMin$ = bindValue<number>(G, "selTtLayoverMin", 0);
+// Stop rules left on stops this line no longer serves — invisible on the stop board (no row exists for them), so the
+// line panel is their only home. Same problem, same shape as the layover's orphan state.
+const selTtRuleOrphans$ = bindValue<number>(G, "selTtRuleOrphans", 0);
 // Per-line custom peak (PR #5): enable + interval + two hour windows.
 const selCustomPeakEnabled$ = bindValue<boolean>(G, "selCustomPeakEnabled", false);
 const selCustomPeakInterval$ = bindValue<number>(G, "selCustomPeakInterval", 5);
@@ -281,6 +284,7 @@ export const TimetableEditor = () => {
     const terminus = useValue(selTtTerminus$) as number;
     const layover = useValue(selTtLayover$) as number;
     const layoverMin = useValue(selTtLayoverMin$) as number;
+    const ruleOrphans = useValue(selTtRuleOrphans$) as number;
     const customPeakOn = useValue(selCustomPeakEnabled$) as boolean;
     const schedule = useValue(selSchedule$) as number; // 0=Day, 1=Night, 2=DayAndNight
     const peakHrs = useValue(peakHours$) as string;
@@ -343,6 +347,22 @@ export const TimetableEditor = () => {
                             </div>
                         </div>
                     ) : null}
+                    {/* Boarding rules stranded on stops that left the route. Nothing else can reach them: the stop
+                        board only draws rows for stops the line still serves, so without this the rule would sit
+                        invisible in the save and come back to life the moment the route was edited back. */}
+                    {ruleOrphans > 0 ? (
+                        <div style={{ fontSize: "11rem", color: "rgb(232, 168, 96)", marginBottom: "6rem", lineHeight: 1.35 }}>
+                            {t("ruleOrphan", "This line has boarding rules set on {n} stop(s) that are no longer on its route, so they are not being applied.", { n: ruleOrphans })}
+                            <div>
+                                <button
+                                    onClick={() => trigger(G, "clearSelRuleOrphans")}
+                                    style={{ marginTop: "4rem", cursor: "pointer", padding: "3rem 10rem", borderRadius: "4rem", fontSize: "11rem", color: "white", background: "rgba(150, 70, 70, 0.9)", pointerEvents: "auto" } as any}
+                                >
+                                    {t("ruleOrphanRemove", "Remove them")}
+                                </button>
+                            </div>
+                        </div>
+                    ) : null}
                     {/* ±1 / ±10, deliberately identical to the interval rows below — one mental model for the panel.
                         ±1 matters: staggering first departures a minute apart across lines that share a stop is a real
                         technique, and the old ±15 (then ±5) could not express it.
@@ -394,13 +414,36 @@ export const TimetableEditor = () => {
 const StopBoard = () => {
     const raw = useValue(selStopBoard$) as string;
     const t = useT();
-    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; est?: boolean; lay?: number; a?: string; layOff?: boolean; d: string }> = [];
+    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; est?: boolean; lay?: number; a?: string; layOff?: boolean; rule?: number; ruleOff?: boolean; d: string }> = [];
     try { board = JSON.parse(raw || "[]"); } catch { board = []; }
     const ttCount = board.filter((e) => e.tt).length;
     const termBtn = {
         cursor: "pointer", display: "block", width: "100%", padding: "7rem 12rem", borderRadius: "4rem",
         fontSize: "13rem", color: "white", pointerEvents: "auto", textAlign: "center",
     } as const;
+    // Per-stop boarding rule. Codes match LineStopRule: 0 normal, 1 set-down only, 2 pick-up only, 3 technical.
+    const ruleLabel = (r: number) =>
+        r === 1 ? t("ruleSetDown", "set down only")
+        : r === 2 ? t("rulePickUp", "pick up only")
+        : r === 3 ? t("ruleTechnical", "technical stop")
+        : t("ruleBoth", "normal");
+    // Two rows of two rather than one row of four: these labels are long in most languages (German's "nur Ausstieg"
+    // is the short one), the panel is 360rem wide, and cohtml has no flex-wrap to fall back on.
+    // A plain function, NOT a component: a component declared inside this render would be a new type on every render,
+    // so React would unmount and remount all four buttons every time the board refreshes (which is every minute, and
+    // on every edit). Returning the element directly keeps them as ordinary siblings.
+    const ruleButton = (row: number, mode: number, active: boolean) => (
+        <button
+            onClick={() => trigger(G, "setStopRuleRow", row, mode)}
+            style={{
+                flex: 1, marginRight: "3rem", cursor: "pointer", padding: "3rem 4rem", borderRadius: "3rem",
+                fontSize: "10rem", color: "white", pointerEvents: "auto",
+                background: active ? "rgba(120, 210, 130, 0.35)" : "rgba(90, 100, 115, 0.9)",
+            } as any}
+        >
+            {ruleLabel(mode)}
+        </button>
+    );
     return (
         <div style={{ padding: "8rem 0 12rem" }}>
             {board.length === 0 ? (
@@ -419,6 +462,16 @@ const StopBoard = () => {
                                         emoji blocks; anything from those blocks is a gamble here. The amber colour
                                         already distinguishes this badge from the green terminus one. */}
                                     {e.layOff ? t("layoverOff", "layover (inactive)") : t("layoverBadge", "layover stop")}
+                                </div>
+                            ) : null}
+                            {/* Words, not glyphs — the game's UI font has no arrows, and a layover badge shipped with
+                                a pause symbol that drew a tofu box on every row before that was learned. */}
+                            {e.rule ? (
+                                <div style={{
+                                    marginLeft: "6rem", fontSize: "11rem",
+                                    color: e.ruleOff ? "rgba(255,255,255,0.4)" : (e.rule === 3 ? "rgb(224, 140, 120)" : "rgb(150, 190, 230)"),
+                                }}>
+                                    {ruleLabel(e.rule)}
                                 </div>
                             ) : null}
                         </div>
@@ -477,6 +530,49 @@ const StopBoard = () => {
                                         {t("setLayoverThis", "Set as Terminus B")}
                                     </button>
                                 ) : null}
+                            </div>
+                        ) : null}
+                        {/* Who may get on and off here, for THIS line only — a kerb shared with other lines keeps
+                            working normally for them. Never offered on the terminus: that stop is where the whole
+                            timetable is anchored and where surplus vehicles retire, so closing it would strand the
+                            line (and a technical stop there would cut the route at its own anchor). */}
+                        {e.tt && !e.term ? (
+                            <div style={{ marginTop: "5rem" }}>
+                                <div style={{ fontSize: "10rem", opacity: 0.5, marginBottom: "2rem" }}>
+                                    {t("ruleLabel", "Passengers here")}
+                                </div>
+                                <div style={{ display: "flex" }}>
+                                    {ruleButton(i, 0, !e.rule)}
+                                    {ruleButton(i, 1, e.rule === 1)}
+                                </div>
+                                <div style={{ display: "flex", marginTop: "3rem" }}>
+                                    {ruleButton(i, 2, e.rule === 2)}
+                                    {ruleButton(i, 3, e.rule === 3)}
+                                </div>
+                                {/* The technical stop is the one mode with a consequence the player cannot see from
+                                    the button: it severs the line for passengers, so no journey can pass this stop. */}
+                                {e.rule === 3 ? (
+                                    <div style={{ fontSize: "10rem", color: "rgb(224, 140, 120)", marginTop: "3rem", lineHeight: 1.3 }}>
+                                        {t("ruleTechnicalNote", "Nobody may be aboard here: the last stop to get off is the one before. No journey on this line can pass this stop, and vehicles always call.")}
+                                    </div>
+                                ) : null}
+                            </div>
+                        ) : null}
+                        {/* A rule that survived onto the terminus (the effective terminus can move on its own when the
+                            chosen stop is deleted). It is NOT being applied, and the row shows no rule buttons because
+                            it is the terminus — so removal needs its own home here, or the setting would sit dimmed
+                            and unreachable. */}
+                        {e.tt && e.term && e.rule ? (
+                            <div style={{ marginTop: "4rem", fontSize: "10rem", color: "rgb(232, 168, 96)", lineHeight: 1.3 }}>
+                                {t("ruleBlocked", "This stop is the line's terminus, so its \"{r}\" rule is not being applied.", { r: ruleLabel(e.rule) })}
+                                <div>
+                                    <button
+                                        onClick={() => trigger(G, "setStopRuleRow", i, 0)}
+                                        style={{ marginTop: "3rem", cursor: "pointer", padding: "2rem 7rem", borderRadius: "3rem", fontSize: "10rem", color: "white", background: "rgba(150, 70, 70, 0.9)", pointerEvents: "auto" } as any}
+                                    >
+                                        {t("ruleOrphanRemove", "Remove them")}
+                                    </button>
+                                </div>
                             </div>
                         ) : null}
                     </div>

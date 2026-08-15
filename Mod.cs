@@ -40,6 +40,9 @@ namespace TransitTimetables
             updateSystem.UpdateAt<HourlyFleetSystem>(SystemUpdatePhase.GameSimulation);
             // Fixed-departure timetabling: terminus hold, derived fleet, retire-at-terminus.
             updateSystem.UpdateAt<TimetableDispatchSystem>(SystemUpdatePhase.GameSimulation);
+            // Per-stop boarding rules (set-down only / pick-up only / technical): edits the passenger pathfind graph,
+            // which is where the game actually decides who may get on and off where.
+            updateSystem.UpdateAt<StopRuleSystem>(SystemUpdatePhase.GameSimulation);
             // Line-panel editor + stop departure board bindings (floating overlay, does not pause the game).
             updateSystem.UpdateAt<TransitParamsUISystem>(SystemUpdatePhase.UIUpdate);
 
