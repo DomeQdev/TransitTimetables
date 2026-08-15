@@ -867,9 +867,15 @@ namespace TransitTimetables
             // whole point of the mod. The panel needs the flag to say which of those it is.
             bool boarding = (EntityManager.GetComponentData<Game.Vehicles.PublicTransport>(sel).m_State
                              & Game.Vehicles.PublicTransportFlags.Boarding) != 0;
+            // At the TERMINUS, waiting for the scheduled minute is the normal state of affairs — that is what a
+            // terminus is. At an ordinary stop the same wait means the vehicle is running AHEAD of its posted time
+            // and is being pulled back onto it. Same mechanism, but a player reads them very differently, so the
+            // chip colours them differently and needs to know which one this is.
+            bool atTerminus = boarding && m_Dispatch.IsVehicleAtTerminus(sel);
             var sb = new StringBuilder();
             sb.Append("{\"onTt\":").Append(onTt ? "true" : "false")
               .Append(",\"brd\":").Append(boarding ? "true" : "false")
+              .Append(",\"term\":").Append(atTerminus ? "true" : "false")
               .Append(",\"late\":").Append(lateMin)
               .Append(",\"next\":").Append(nextMin)
               .Append(",\"stage\":").Append(stage).Append('}');

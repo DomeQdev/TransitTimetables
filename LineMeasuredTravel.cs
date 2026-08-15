@@ -25,10 +25,18 @@ namespace TransitTimetables
         // Persisted so a reload does not drop back to the (lower, conservative) anchor and churn every fleet down and
         // then back up. 0 when the line has not yet earned a median.
         public float m_LoopMedianFrames;
+        // v3. EMA of the DEPOT LEAD: frames from a vehicle first appearing on the line to it first reaching the
+        // terminus and taking a slot — i.e. how long the drive out of the depot actually takes. The fleet look-ahead
+        // spends this to raise the count EARLY, so a vehicle is standing at the terminus when a peak (or the first
+        // departure) starts, instead of only then leaving the depot. Persisted for the same reason the loop is: it is
+        // learned from real spawns, and a reload would otherwise drop the lead to zero and re-learn it by being late
+        // for the next peak. 0 when the line has never been observed spawning one.
+        public float m_DepotLeadFrames;
 
-        // v1 -> v2 added m_LoopMedianFrames. Deserialize GATES on the stored byte, so a v1 save loads with median 0 and
-        // simply keeps using the anchor until it re-earns one. This is the growth path the version byte exists for.
-        private const byte kVersion = 2;
+        // v1 -> v2 added m_LoopMedianFrames; v2 -> v3 added m_DepotLeadFrames. Deserialize GATES on the stored byte,
+        // so an older save loads with the new fields at 0 and simply re-earns them. This is the growth path the
+        // version byte exists for.
+        private const byte kVersion = 3;
 
         public void Serialize<TWriter>(TWriter writer) where TWriter : IWriter
         {
@@ -37,6 +45,7 @@ namespace TransitTimetables
             writer.Write(m_LoopMinFrames);
             writer.Write(m_LoopSamples);
             writer.Write(m_LoopMedianFrames);
+            writer.Write(m_DepotLeadFrames);
         }
 
         public void Deserialize<TReader>(TReader reader) where TReader : IReader
@@ -47,6 +56,8 @@ namespace TransitTimetables
             reader.Read(out m_LoopSamples);
             if (version >= 2) reader.Read(out m_LoopMedianFrames);
             else m_LoopMedianFrames = 0f;   // v1 save: nothing stored, fall back to the anchor until re-earned
+            if (version >= 3) reader.Read(out m_DepotLeadFrames);
+            else m_DepotLeadFrames = 0f;    // v1/v2 save: no lead learned yet, so the look-ahead is simply off
         }
     }
 }

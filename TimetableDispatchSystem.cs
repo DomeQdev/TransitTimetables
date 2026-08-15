@@ -173,6 +173,33 @@ namespace TransitTimetables
         // provisioning, where there is no established service to bunch against and ramping would instead leave a new
         // line running one bus for many headways. First sizing lands whole; only subsequent CHANGES are staggered.
         private readonly Dictionary<Entity, uint> m_RampSince = new Dictionary<Entity, uint>();
+        // ---- DEPOT LEAD: get the vehicle to the terminus BY the minute it is needed, not on its way then ----
+        //
+        // Vanilla owns the depot. The mod only steers the COUNT, and the moment the count rises vanilla dispatches a
+        // vehicle which then has to DRIVE from the depot to the line. Raising the count at 05:00 for an 05:00 first
+        // departure therefore misses it by the length of that drive, and the same is true of every peak boundary —
+        // the extra peak vehicles were only setting off as the peak began.
+        //
+        // So measure the drive and spend it. m_VehFirstSeen stamps the frame a vehicle first appears in a line's
+        // RouteVehicle buffer; when it first takes a slot at the terminus (m_RunSlotFrame) the span between the two IS
+        // the depot lead, and it goes into a per-line EMA. The fleet look-ahead then sizes the line for the headway
+        // that will be in force one lead from now (LookaheadInterval), so the count — and the dispatch — happens early
+        // enough for the vehicle to be standing at the terminus on the minute.
+        //
+        // Nothing about the POSTED TIMES moves: the look-ahead is used only where the fleet is derived. curInterval,
+        // which drives the holds and the board, is still the interval for right now.
+        private readonly Dictionary<Entity, uint> m_VehFirstSeen = new Dictionary<Entity, uint>();
+        private readonly Dictionary<Entity, float> m_LineDepotLead = new Dictionary<Entity, float>();
+        // Every vehicle we have already seen on some line. A vehicle absent from this set is genuinely NEW — just
+        // dispatched — which is what makes m_VehFirstSeen a depot stamp rather than a "we started looking" stamp.
+        private readonly HashSet<Entity> m_KnownVeh = new HashSet<Entity>();
+        // On a load every vehicle is new to us but none of them came from a depot just now, and timing them from the
+        // load to their next terminus would fold most of a LOOP into the lead. So the first tick after a load only
+        // takes the census; measurement starts from the tick after that.
+        private bool m_VehCensusPending = true;
+        // Sanity bound on a single sample and on the applied lead. A depot run is minutes; anything beyond this is a
+        // vehicle that was already out (a missed census, a route edit mid-drive) and must not skew the EMA.
+        private const float kMaxDepotLeadMinutes = 45f;
         // MISSED-TRIP CATCH-UP: per LINE, the sim FRAME of the most recent scheduled slot a bus was assigned/dispatched
         // on ("claimed"). When a bus reaches the terminus and a scheduled slot has since passed UNCOVERED (its frame is
         // newer than this) it is dispatched IMMEDIATELY to fill the gap instead of idling to the next slot — provided
@@ -415,6 +442,11 @@ namespace TransitTimetables
         {
             base.OnGameLoadingComplete(purpose, mode);
             m_GlobalHealPending = true;
+            // Re-take the vehicle census: every vehicle in the freshly loaded city is new to us but none of them was
+            // just dispatched, and timing them from here would fold most of a loop into the depot lead.
+            m_VehCensusPending = true;
+            m_KnownVeh.Clear();
+            m_VehFirstSeen.Clear();
             // Gate on GameMode.Game: this also fires at boot for the main menu and for the editor, where there is no
             // city to inspect and no HUD to draw a dialog over.
             m_MigrationCheckPending = mode == GameMode.Game;
@@ -650,7 +682,12 @@ namespace TransitTimetables
                     int stable = agrees ? (m_DurStable.TryGetValue(line, out int sc) ? sc : 0) + 1 : 0;
                     m_DurStable[line] = stable;
                     {
-                        int interval = ScheduleMath.IntervalFor(s, sch, customSch, nowMin, sched);
+                        // DEPOT LEAD LOOK-AHEAD (see m_VehFirstSeen). Size the line for the headway that will be in
+                        // force by the time a vehicle dispatched NOW could actually reach the terminus — so the extra
+                        // peak vehicles are standing there when the peak opens, rather than pulling out of the depot
+                        // then. Deliberately the fleet interval only: curInterval (the holds, the board, the posted
+                        // times) is untouched and still describes right now.
+                        int interval = LookaheadInterval(s, sch, customSch, sched, nowMin, DepotLeadMinutes(line));
                         // Phase 2: size the fleet to the REAL loop when the player opts in (costs money); otherwise the
                         // estimate, exactly as before. LineCorrection is grow-only for fleet; kFleetCap is the hard backstop.
                         // Size to the REAL loop, but ONLY once this line has actually measured one. Without the
@@ -903,6 +940,19 @@ namespace TransitTimetables
                         live.Add(veh);
                         m_LiveVehScratch.Add(veh); // union of all live vehicles -> prunes m_RunSlotFrame after the loop
                         liveCount++;
+                        // DEPOT LEAD (see m_VehFirstSeen): stamp a genuinely new vehicle, and close the measurement
+                        // the tick it first holds a slot — which HoldAllStops has already assigned this tick, since it
+                        // runs before this drain. On the census tick nothing is timed, only recorded as known.
+                        if (!m_KnownVeh.Contains(veh))
+                        {
+                            m_KnownVeh.Add(veh);
+                            if (!m_VehCensusPending) m_VehFirstSeen[veh] = frame;
+                        }
+                        else if (m_VehFirstSeen.TryGetValue(veh, out uint firstSeen) && m_RunSlotFrame.ContainsKey(veh))
+                        {
+                            m_VehFirstSeen.Remove(veh);
+                            AcceptDepotLead(line, frame - firstSeen);
+                        }
                         if ((EntityManager.GetComponentData<PublicTransport>(veh).m_State & PublicTransportFlags.AbandonRoute) != 0)
                             flaggedCount++;
                         // Arrival stamp for HoldStop's min-dwell: presence in m_ArrivedFrame == "currently boarding,
@@ -967,7 +1017,7 @@ namespace TransitTimetables
                     // target the one-per-headway walk is heading for, target= being the step it is on right now). Lets
                     // a live log tell "the mod wants 19 and is walking there" from "the mod thinks this line needs 11".
                     if (diagLog)
-                        Mod.log.Info($"[SelfTest] fleet line#{line.Index} now={nowMin}m live={liveCount} target={desiredFleet} ramp={(rampTarget != 0 ? rampTarget.ToString() : "-")} surplus={surplus} slotCovered={slotCovered} pending={pending.Count} forced={forcedStops}");
+                        Mod.log.Info($"[SelfTest] fleet line#{line.Index} now={nowMin}m live={liveCount} target={desiredFleet} ramp={(rampTarget != 0 ? rampTarget.ToString() : "-")} surplus={surplus} slotCovered={slotCovered} pending={pending.Count} forced={forcedStops} depotLead={DepotLeadMinutes(line)}m");
 
                     // Stale-latch repair. `pending` used to be cleared ONLY when surplus hit 0, so buses latched while the
                     // surplus was larger stayed latched after it shrank — observed live as pending=8 against surplus=4 —
@@ -1106,8 +1156,14 @@ namespace TransitTimetables
             PruneToLive(m_LastSlotFrame, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_ShrinkSince, m_LiveScratch, m_StaleScratch);
             PruneToLive(m_RampSince, m_LiveScratch, m_StaleScratch);
+            PruneToLive(m_LineDepotLead, m_LiveScratch, m_StaleScratch);
             // Drop per-vehicle slots for buses that despawned/retired (m_LiveVehScratch = every live vehicle this tick).
             PruneToLive(m_RunSlotFrame, m_LiveVehScratch, m_StaleScratch);
+            PruneToLive(m_VehFirstSeen, m_LiveVehScratch, m_StaleScratch);
+            m_KnownVeh.RemoveWhere(v => !m_LiveVehScratch.Contains(v));
+            // The census tick is over: every vehicle that existed at load is now in m_KnownVeh, so from here on an
+            // unknown vehicle really is one the depot just dispatched.
+            m_VehCensusPending = false;
             PruneToLive(m_ArrivedFrame, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_VehTerminusDepart, m_LiveVehScratch, m_StaleScratch);
             PruneToLive(m_VehStopHold, m_LiveVehScratch, m_StaleScratch);
@@ -1753,8 +1809,16 @@ namespace TransitTimetables
         // component is absent or empty.
         private void RehydrateMeasured(Entity line)
         {
-            if (m_LineLoopSamples.ContainsKey(line)) return;                 // already have live/seeded data
             if (!EntityManager.HasComponent<LineMeasuredTravel>(line)) return;
+            // The depot lead is seeded INDEPENDENTLY of the loop measurement, and before the loop's early-outs: a line
+            // can have a stored lead and no usable loop yet (it spawned a vehicle but has not completed a lap), and
+            // that lead is exactly what the first peak after a reload needs.
+            if (!m_LineDepotLead.ContainsKey(line))
+            {
+                float storedLead = EntityManager.GetComponentData<LineMeasuredTravel>(line).m_DepotLeadFrames;
+                if (storedLead > 0f) m_LineDepotLead[line] = storedLead;
+            }
+            if (m_LineLoopSamples.ContainsKey(line)) return;                 // already have live/seeded data
             LineMeasuredTravel c = EntityManager.GetComponentData<LineMeasuredTravel>(line);
             if (c.m_LoopSamples <= 0 || !(c.m_LoopEmaFrames > 0f)) return;   // nothing meaningful stored (also rejects NaN)
             m_LineLoopEma[line] = c.m_LoopEmaFrames;
@@ -1773,16 +1837,30 @@ namespace TransitTimetables
         private void MirrorMeasured(Entity line)
         {
             if (!EntityManager.HasComponent<LineMeasuredTravel>(line)) return;
-            if (!m_LineLoopSamples.TryGetValue(line, out int samples) || samples <= 0) return;
+            float lead = m_LineDepotLead.TryGetValue(line, out float dl) ? dl : 0f;
+            // NOT gated on having a loop sample, unlike the fields below: the depot lead is learned from a single
+            // spawn and is useful long before the line has completed a timed lap, so gating it on the loop would
+            // throw away exactly the case it is there for (a brand-new line's first peak).
+            if (!m_LineLoopSamples.TryGetValue(line, out int samples) || samples <= 0)
+            {
+                LineMeasuredTravel leadOnly = EntityManager.GetComponentData<LineMeasuredTravel>(line);
+                if (leadOnly.m_DepotLeadFrames != lead)
+                {
+                    leadOnly.m_DepotLeadFrames = lead;
+                    EntityManager.SetComponentData(line, leadOnly);
+                }
+                return;
+            }
             float ema = m_LineLoopEma.TryGetValue(line, out float e) ? e : 0f;
             float min = m_LineLoopMin.TryGetValue(line, out float m) ? m : 0f;
             float med = m_LineLoopMedian.TryGetValue(line, out float md) ? md : 0f;
             ushort s = samples > ushort.MaxValue ? ushort.MaxValue : (ushort)samples;
             LineMeasuredTravel cur = EntityManager.GetComponentData<LineMeasuredTravel>(line);
             if (cur.m_LoopEmaFrames == ema && cur.m_LoopMinFrames == min && cur.m_LoopSamples == s
-                && cur.m_LoopMedianFrames == med) return;                                               // unchanged
+                && cur.m_LoopMedianFrames == med && cur.m_DepotLeadFrames == lead) return;              // unchanged
             EntityManager.SetComponentData(line, new LineMeasuredTravel {
-                m_LoopEmaFrames = ema, m_LoopMinFrames = min, m_LoopSamples = s, m_LoopMedianFrames = med });
+                m_LoopEmaFrames = ema, m_LoopMinFrames = min, m_LoopSamples = s, m_LoopMedianFrames = med,
+                m_DepotLeadFrames = lead });
         }
 
         // Clean uninstall (Options button): wipe every trace of the mod from the current save. For each timetabled line
@@ -1830,6 +1908,7 @@ namespace TransitTimetables
             m_LineLoopEma.Clear(); m_LineLoopSamples.Clear(); m_LineLoopMin.Clear(); m_LineRejectStreak.Clear();
             m_LastDur.Clear(); m_DurStable.Clear(); m_LastSlotFrame.Clear(); m_ShrinkSince.Clear(); m_RampSince.Clear();
             m_RunSlotFrame.Clear(); m_ArrivedFrame.Clear(); m_VehTerminusDepart.Clear(); m_Committed.Clear();
+            m_LineDepotLead.Clear(); m_VehFirstSeen.Clear(); m_KnownVeh.Clear(); m_VehCensusPending = true;
             m_VehStopHold.Clear(); m_VehHoldFrames.Clear(); m_PostedOffset.Clear(); m_PostedArrival.Clear(); m_PostedFleet.Clear();
             Mod.log.Info($"[SelfTest] clean uninstall: reverted {n} line(s) to vanilla and removed all mod components. " +
                          "Save your city; the mod can now be removed with no residue.");
@@ -2234,6 +2313,76 @@ namespace TransitTimetables
                     return;
                 }
             }
+        }
+
+        // Fold one observed depot->terminus drive into this line's lead EMA. Samples outside the sanity bound are
+        // DISCARDED rather than clamped: an over-long span means the vehicle was not actually fresh out of the depot
+        // (a census miss, a route edit mid-drive), so it carries no information about the drive and clamping it would
+        // quietly bias every future peak early by the bound.
+        private void AcceptDepotLead(Entity line, uint spanFrames)
+        {
+            if (m_Fpm <= 0.01f || spanFrames == 0)
+                return;
+            float minutes = spanFrames / m_Fpm;
+            if (minutes <= 0f || minutes > kMaxDepotLeadMinutes)
+                return;
+            // Weighted toward the running value: depot runs are consistent, and one unlucky sample (traffic, a vehicle
+            // that spawned into a jam) should not swing the next peak's timing.
+            m_LineDepotLead[line] = m_LineDepotLead.TryGetValue(line, out float prev) && prev > 0f
+                ? prev * 0.7f + spanFrames * 0.3f
+                : spanFrames;
+        }
+
+        // This line's measured depot lead in in-game MINUTES, 0 when it has never been observed dispatching one.
+        // Zero is the honest default and it simply switches the look-ahead off — the first spawn teaches the line its
+        // own number, and it is persisted (LineMeasuredTravel v3) so a reload does not have to re-learn it by being
+        // late for one more peak.
+        private int DepotLeadMinutes(Entity line)
+        {
+            if (m_Fpm <= 0.01f || !m_LineDepotLead.TryGetValue(line, out float frames) || frames <= 0f)
+                return 0;
+            int min = (int)System.Math.Round(frames / m_Fpm);
+            if (min < 0) min = 0;
+            if (min > (int)kMaxDepotLeadMinutes) min = (int)kMaxDepotLeadMinutes;
+            return min;
+        }
+
+        // The SHORTEST headway this line will run at any point between now and `leadMin` from now.
+        //
+        // Shortest, not "the one at now+lead", and that asymmetry is the point: a shorter headway means MORE vehicles,
+        // so taking the minimum makes the count rise early (before the peak, in time to be useful) while never falling
+        // early (which would strip vehicles out of a peak that is still running). Sampled rather than evaluated at the
+        // two ends because a custom peak window can be shorter than the lead and would otherwise be stepped straight
+        // over; the step is small enough that no window the UI can express is missed.
+        private static int LookaheadInterval(TransitTimetablesSetting s, TimetableSchedule sch,
+            CustomPeakSchedule customSch, int sched, int nowMin, int leadMin)
+        {
+            int best = ScheduleMath.IntervalFor(s, sch, customSch, nowMin, sched);
+            if (leadMin <= 0)
+                return best;
+            for (int m = 5; m <= leadMin; m += 5)
+            {
+                int i = ScheduleMath.IntervalFor(s, sch, customSch, (nowMin + m) % 1440, sched);
+                if (i < best) best = i;
+            }
+            int end = ScheduleMath.IntervalFor(s, sch, customSch, (nowMin + leadMin) % 1440, sched);
+            return end < best ? end : best;
+        }
+
+        // Is this vehicle standing at its line's terminus right now? The panel needs it to tell "held at the terminus
+        // for its scheduled departure" (normal, and the whole purpose of a terminus) apart from "held at an ordinary
+        // stop because it is running ahead of the posted time" — two states a player reads very differently.
+        public bool IsVehicleAtTerminus(Entity veh)
+        {
+            if (veh == Entity.Null || !EntityManager.HasComponent<CurrentRoute>(veh)
+                || !EntityManager.HasComponent<Target>(veh))
+                return false;
+            Entity line = EntityManager.GetComponentData<CurrentRoute>(veh).m_Route;
+            if (line == Entity.Null || !EntityManager.HasComponent<TimetableSchedule>(line)
+                || !EntityManager.HasBuffer<RouteWaypoint>(line))
+                return false;
+            FindTerminus(line, EntityManager.GetComponentData<TimetableSchedule>(line), out _, out Entity termWp);
+            return termWp != Entity.Null && EntityManager.GetComponentData<Target>(veh).m_Target == termWp;
         }
 
         // Resolve this line's layover ("Terminus B") to a usable (stop, waypoint, minutes) triple. False when there is

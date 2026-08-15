@@ -209,20 +209,51 @@ const RealInfo = ({ raw }: { raw: string }) => {
 // Injected into the native PublicTransportVehicleSection, so it shows when a bus/train/tram is selected. Renders
 // nothing unless that vehicle is on a line with an ENABLED timetable, so it is inert on freight and on untimetabled
 // lines. C# sends numbers only; the sentence is assembled here from a per-language template, same as RealInfo.
+// One native-looking info row: label on the left, value on the right. Mirrors the game's own Owner / Destination /
+// Line rows in the same panel rather than sitting under them as a paragraph of loose text.
+const InfoRow = ({ label, children }: { label: string; children: any }) => (
+    <div style={{ display: "flex", alignItems: "center", padding: "4rem 14rem", minHeight: "28rem" }}>
+        <div style={{ flex: 1, fontSize: "14rem", color: "var(--textColor)" } as any}>{label}</div>
+        {children}
+    </div>
+);
+
+// The status pill. Colour IS the message — you should be able to read a line's health from across the panel without
+// parsing a sentence — so each state gets a distinct, conventional one:
+//   red    late
+//   green  on time
+//   grey   standing at the terminus waiting for its booked minute (the normal state of a terminus, not a fault)
+//   amber  running ahead of the posted time and being held back onto it at an ordinary stop
+const Chip = ({ text, tone }: { text: string; tone: "red" | "green" | "grey" | "amber" }) => {
+    const bg = tone === "red" ? "rgba(200, 70, 60, 0.95)"
+        : tone === "green" ? "rgba(60, 160, 90, 0.95)"
+        : tone === "amber" ? "rgba(214, 145, 45, 0.95)"
+        : "rgba(120, 128, 140, 0.9)";
+    return (
+        <div style={{
+            padding: "2rem 10rem", borderRadius: "10rem", background: bg,
+            fontSize: "12rem", color: "white", whiteSpace: "nowrap",
+        } as any}>
+            {text}
+        </div>
+    );
+};
+
 const VehicleSchedule = ({ raw }: { raw: string }) => {
     const t = useT();
     if (!raw) return null;
-    let d: { onTt: boolean; brd?: boolean; late: number; next: number; stage: number };
+    let d: { onTt: boolean; brd?: boolean; term?: boolean; late: number; next: number; stage: number };
     try { d = JSON.parse(raw); } catch { return null; }
     if (!d) return null;
 
     // No slot yet. The game spawns from the depot onto the nearest stop, so a vehicle that joined mid route runs
-    // unscheduled until it first reaches the terminus. It is not late, it has no schedule to be late against.
+    // unscheduled until it first reaches the terminus. It is not late, it has no schedule to be late against —
+    // so it gets the neutral chip, not a warning one.
     if (!d.onTt)
         return (
-            <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", padding: "4rem 14rem 8rem", lineHeight: 1.35 }}>
-                {t("vehNotOnTimetable", "Not yet on the timetable. It picks up its schedule when it first reaches the terminus.")}
-            </div>
+            <InfoRow label={t("vehStatusLabel", "Schedule")}>
+                <Chip tone="grey" text={t("vehChipNoSlot", "not on timetable yet")} />
+            </InfoRow>
         );
 
     const late = Math.round(d.late);
@@ -251,20 +282,45 @@ const VehicleSchedule = ({ raw }: { raw: string }) => {
     // What IS observable while moving: once the clock passes the next stop's scheduled departure and the vehicle
     // still is not there, it is behind by exactly that overrun, without knowing where along the leg it is. That is
     // a lower bound which only grows until it arrives. Before that moment, no claim at all.
-    const status = d.brd
-        ? (late < 0 ? t("vehHolding", "Waiting here until {at}, its scheduled departure.", vars)
-           : late > 0 ? t("vehAtStopLate", "At this stop, {n} min behind its {at} departure.", vars)
-           : t("vehAtStop", "At this stop, departing {at}.", vars))
-        : (late > 0 ? t("vehBehind", "Running {n} min behind schedule. Its next stop was due at {at}.", vars)
-           : t("vehNextStop", "Next stop due at {at}.", vars));
-    // Same honesty as the line panel: a line still learning its loop should not present a firm minute.
+    // LATE is the one deviation that is true in both situations, so it is decided first and identically.
+    let tone: "red" | "green" | "grey" | "amber" = "green";
+    let text: string;
+    if (late > 0) {
+        tone = "red";
+        text = t("vehChipLate", "{n} min late", vars);
+    } else if (d.brd) {
+        // Standing still, before its booked minute. At the terminus that is simply what a terminus does; anywhere
+        // else it means the vehicle ran the leg quicker than the posted time and is being pulled back onto it.
+        tone = d.term ? "grey" : "amber";
+        text = late < 0
+            ? (d.term ? t("vehChipWaiting", "departs {at}", vars) : t("vehChipEarly", "{n} min early", vars))
+            : t("vehChipOnTime", "on time");
+    } else {
+        // In transit and nothing overdue. Deliberately NOT reported as "early", however negative `late` looks: the
+        // offsets are DEPARTURE times, so before the next stop's minute `late` is just the countdown to it. Calling
+        // that earliness produced the nonsense that a punctual bus two minutes into a ten-minute leg was "8 min
+        // early", resetting on every leg. Lateness cannot be carried forward from the previous stop either — the
+        // offsets come from an AVERAGED loop, so a quick leg genuinely recovers time. Once the clock passes the next
+        // stop's minute and the vehicle is still not there it is behind by exactly that overrun, which is the `late`
+        // branch above. Before that moment: on time, and no number invented.
+        text = t("vehChipOnTime", "on time");
+    }
+    // Same honesty as the line panel: a line still learning its loop should not present a firm minute as settled.
+    // One short line under the row rather than glued onto the chip, which has to stay scannable.
     const caveat = d.stage < 2
-        ? " " + t("vehRefining", "This line is still measuring its real loop, so these times will shift.", vars)
+        ? t("vehRefining", "This line is still measuring its real loop, so these times will shift.", vars)
         : "";
     return (
-        <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", padding: "4rem 14rem 8rem", lineHeight: 1.35 }}>
-            {status + caveat}
-        </div>
+        <>
+            <InfoRow label={t("vehStatusLabel", "Schedule")}>
+                <Chip tone={tone} text={text} />
+            </InfoRow>
+            {caveat ? (
+                <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", padding: "0 14rem 6rem", lineHeight: 1.35 }}>
+                    {caveat}
+                </div>
+            ) : null}
+        </>
     );
 };
 
