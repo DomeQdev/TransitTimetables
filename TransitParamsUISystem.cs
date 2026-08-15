@@ -193,7 +193,7 @@ namespace TransitTimetables
                     && EntityManager.HasComponent<LineLayover>(m_LastLine))
                 { EntityManager.RemoveComponent<LineLayover>(m_LastLine); m_UiDirty = true; }
             }));
-            // Per-stop boarding rule for one board row's (line, stop): 0 normal, 1 set-down only, 2 pick-up only,
+            // Per-stop boarding rule for one board row's (line, stop): 0 normal, 1 drop-off only, 2 pick-up only,
             // 3 technical. See LineStopRule.
             AddBinding(new TriggerBinding<int, int>(Group, "setStopRuleRow", SetStopRuleRow));
             // Drop the OPEN line's rules on stops it no longer serves — the only way to reach them, since the stop
@@ -313,11 +313,9 @@ namespace TransitTimetables
         // rule set on one would be save residue the player could not see. (The CleanUninstall sweep does cover them —
         // this guard is about not creating the situation in the first place.)
         //
-        // The TERMINUS is refused. Every vehicle is held there for its scheduled departure and surplus vehicles retire
-        // there after dumping their passengers; closing boarding or alighting at that stop would strand the line's
-        // whole reason for existing, and a technical stop would additionally sever the route at its own anchor. The
-        // button is hidden on the terminus row, so this is the belt to that braces — the effective terminus can move
-        // under us via the first-boarding-stop fallback, the same way it can for a layover.
+        // The TERMINUS is allowed, unlike the layover. A layover on the terminus is meaningless (the terminus hold
+        // already IS the wait), but a restricted terminus is a real operating pattern and nothing in the timetable
+        // depends on that stop being open to passengers — see the note in LineStopRule.
         private void SetStopRuleRow(int i, int mode)
         {
             if (i < 0 || i >= m_BoardRows.Count)
@@ -328,15 +326,6 @@ namespace TransitTimetables
                 return;
             if (mode < LineStopRule.None || mode > LineStopRule.Technical)
                 return;
-            if (mode != LineStopRule.None)
-            {
-                TimetableSchedule sch = EntityManager.GetComponentData<TimetableSchedule>(line);
-                Entity termWp = TerminusWaypoint(line, sch);
-                Entity termStop = termWp != Entity.Null && EntityManager.HasComponent<Connected>(termWp)
-                    ? EntityManager.GetComponentData<Connected>(termWp).m_Connected : Entity.Null;
-                if (termStop == stop)
-                    return;
-            }
             StopRules.SetMode(EntityManager, line, stop, (byte)mode);
             m_UiDirty = true;
         }
@@ -353,12 +342,6 @@ namespace TransitTimetables
                 sch.m_TerminusStop = stop;
                 EntityManager.SetComponentData(line, sch);
             }
-            // A stop cannot be both the anchor and restricted: the terminus is where every vehicle is held for its
-            // scheduled departure and where surplus vehicles retire, so a rule closing it would strangle the line.
-            // The enforcement already refuses to apply one there (StopRuleSystem, "terminus wins"); clearing it here
-            // means the ordinary way of creating the conflict — pointing the terminus at a stop that already had a
-            // rule — resolves cleanly instead of leaving a dimmed, inert setting behind.
-            StopRules.SetMode(EntityManager, line, stop, LineStopRule.None);
         }
 
         private static int Clamp(int v, int lo, int hi) => v < lo ? lo : (v > hi ? hi : v);
@@ -741,10 +724,7 @@ namespace TransitTimetables
                       .Append(",\"a\":\"").Append(arr).Append('"');
                     if (layOff) sb.Append(",\"layOff\":true");
                 }
-                // A rule on the row that is ALSO the terminus is set but not enforced (StopRuleSystem drops it —
-                // terminus wins). Flagged so the board can show it dimmed with a remove button, rather than either
-                // lying about it or hiding it into unreachability.
-                if (rule > 0) sb.Append(",\"rule\":").Append(rule).Append(term ? ",\"ruleOff\":true" : "");
+                if (rule > 0) sb.Append(",\"rule\":").Append(rule);
                 sb.Append(",\"d\":\"").Append(dep).Append("\"}");
             }
             sb.Append(']');

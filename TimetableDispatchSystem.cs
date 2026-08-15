@@ -2236,21 +2236,6 @@ namespace TransitTimetables
             }
         }
 
-        // The stop this line's timetable is ACTUALLY anchored to — the player's choice while it is still usable, else
-        // the first-boarding-stop fallback. Exposed so other systems can ask instead of re-deriving it: this
-        // resolution already exists in three places (here, the panel's TerminusWaypoint, the board), and every extra
-        // copy is another chance for the UI and the simulation to disagree about where a line terminates.
-        // Entity.Null when the line carries no timetable or has no boardable stop at all.
-        public Entity EffectiveTerminusStop(Entity line)
-        {
-            if (line == Entity.Null || !EntityManager.Exists(line)
-                || !EntityManager.HasComponent<TimetableSchedule>(line)
-                || !EntityManager.HasBuffer<RouteWaypoint>(line))
-                return Entity.Null;
-            FindTerminus(line, EntityManager.GetComponentData<TimetableSchedule>(line), out Entity stop, out _);
-            return stop;
-        }
-
         // Resolve this line's layover ("Terminus B") to a usable (stop, waypoint, minutes) triple. False when there is
         // nothing usable: no component, zero minutes, the stop deleted or no longer boardable / on the route — the same
         // silent-fallback validity rules FindTerminus applies to the terminus itself — or the stop IS the effective

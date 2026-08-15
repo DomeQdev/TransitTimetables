@@ -414,7 +414,7 @@ export const TimetableEditor = () => {
 const StopBoard = () => {
     const raw = useValue(selStopBoard$) as string;
     const t = useT();
-    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; est?: boolean; lay?: number; a?: string; layOff?: boolean; rule?: number; ruleOff?: boolean; d: string }> = [];
+    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; est?: boolean; lay?: number; a?: string; layOff?: boolean; rule?: number; d: string }> = [];
     try { board = JSON.parse(raw || "[]"); } catch { board = []; }
     const ttCount = board.filter((e) => e.tt).length;
     const termBtn = {
@@ -423,8 +423,8 @@ const StopBoard = () => {
     } as const;
     // Per-stop boarding rule. Codes match LineStopRule: 0 normal, 1 set-down only, 2 pick-up only, 3 technical.
     const ruleLabel = (r: number) =>
-        r === 1 ? t("ruleSetDown", "set down only")
-        : r === 2 ? t("rulePickUp", "pick up only")
+        r === 1 ? t("ruleDropOff", "drop-off only")
+        : r === 2 ? t("rulePickUp", "pick-up only")
         : r === 3 ? t("ruleTechnical", "technical stop")
         : t("ruleBoth", "normal");
     // Two rows of two rather than one row of four: these labels are long in most languages (German's "nur Ausstieg"
@@ -469,7 +469,7 @@ const StopBoard = () => {
                             {e.rule ? (
                                 <div style={{
                                     marginLeft: "6rem", fontSize: "11rem",
-                                    color: e.ruleOff ? "rgba(255,255,255,0.4)" : (e.rule === 3 ? "rgb(224, 140, 120)" : "rgb(150, 190, 230)"),
+                                    color: e.rule === 3 ? "rgb(224, 140, 120)" : "rgb(150, 190, 230)",
                                 }}>
                                     {ruleLabel(e.rule)}
                                 </div>
@@ -533,10 +533,10 @@ const StopBoard = () => {
                             </div>
                         ) : null}
                         {/* Who may get on and off here, for THIS line only — a kerb shared with other lines keeps
-                            working normally for them. Never offered on the terminus: that stop is where the whole
-                            timetable is anchored and where surplus vehicles retire, so closing it would strand the
-                            line (and a technical stop there would cut the route at its own anchor). */}
-                        {e.tt && !e.term ? (
+                            working normally for them. Offered on EVERY stop the line serves, the terminus included —
+                            a technical call at the end of a run is a normal operating pattern, and the terminus keeps
+                            anchoring the schedule either way (see LineStopRule). */}
+                        {e.tt ? (
                             <div style={{ marginTop: "5rem" }}>
                                 <div style={{ fontSize: "10rem", opacity: 0.5, marginBottom: "2rem" }}>
                                     {t("ruleLabel", "Passengers here")}
@@ -556,23 +556,6 @@ const StopBoard = () => {
                                         {t("ruleTechnicalNote", "Nobody may be aboard here: the last stop to get off is the one before. No journey on this line can pass this stop, and vehicles always call.")}
                                     </div>
                                 ) : null}
-                            </div>
-                        ) : null}
-                        {/* A rule that survived onto the terminus (the effective terminus can move on its own when the
-                            chosen stop is deleted). It is NOT being applied, and the row shows no rule buttons because
-                            it is the terminus — so removal needs its own home here, or the setting would sit dimmed
-                            and unreachable. */}
-                        {e.tt && e.term && e.rule ? (
-                            <div style={{ marginTop: "4rem", fontSize: "10rem", color: "rgb(232, 168, 96)", lineHeight: 1.3 }}>
-                                {t("ruleBlocked", "This stop is the line's terminus, so its \"{r}\" rule is not being applied.", { r: ruleLabel(e.rule) })}
-                                <div>
-                                    <button
-                                        onClick={() => trigger(G, "setStopRuleRow", i, 0)}
-                                        style={{ marginTop: "3rem", cursor: "pointer", padding: "2rem 7rem", borderRadius: "3rem", fontSize: "10rem", color: "white", background: "rgba(150, 70, 70, 0.9)", pointerEvents: "auto" } as any}
-                                    >
-                                        {t("ruleOrphanRemove", "Remove them")}
-                                    </button>
-                                </div>
                             </div>
                         ) : null}
                     </div>

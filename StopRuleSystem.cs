@@ -76,7 +76,6 @@ namespace TransitTimetables
     public partial class StopRuleSystem : GameSystemBase
     {
         private PathfindQueueSystem m_PathfindQueue;
-        private TimetableDispatchSystem m_Dispatch;   // for the ONE authoritative answer to "where does this line terminate"
         private EntityQuery m_RuleQuery;
 
         // Edge owner (a waypoint, or a RouteSegment for the technical cut) -> the rule mode we have applied to it.
@@ -99,7 +98,6 @@ namespace TransitTimetables
         {
             base.OnCreate();
             m_PathfindQueue = World.GetOrCreateSystemManaged<PathfindQueueSystem>();
-            m_Dispatch = World.GetOrCreateSystemManaged<TimetableDispatchSystem>();
             m_RuleQuery = GetEntityQuery(new EntityQueryDesc
             {
                 All = new[]
@@ -207,23 +205,18 @@ namespace TransitTimetables
             if (wps.Length == 0)
                 return;
 
-            // TERMINUS WINS, exactly as it does for a layover. The panel refuses to set a rule on the terminus and
-            // clears one when the terminus is moved onto it, but the EFFECTIVE terminus can also move on its own:
-            // delete the chosen stop and the first-boarding-stop fallback picks the next one, which may be a stop that
-            // already carries a rule. Enforcing it there would close the one stop the whole timetable is anchored to —
-            // every vehicle is held for its scheduled departure there and surplus vehicles retire there — so the line
-            // would be strangled by a setting the player made about a different stop. The board shows such a rule
-            // dimmed, with a remove button, so it is visible rather than silently ignored.
-            Entity terminus = m_Dispatch != null ? m_Dispatch.EffectiveTerminusStop(line) : Entity.Null;
-
+            // THE TERMINUS IS NOT EXEMPT. An earlier revision skipped it, on the theory that closing the schedule
+            // anchor would strangle the line — it does not. Everything the terminus is for survives these rules:
+            // FindTerminus resolves it from the stop's BoardingVehicle component (a physical thing, untouched here),
+            // the departure hold writes PublicTransport.m_DepartureFrame on whatever vehicle occupies that slot, and
+            // a retiring vehicle has no passengers to strand precisely because the rule emptied it. A technical
+            // terminus — depot access, a driver change at the end of the run — is a normal thing to want.
             for (int r = 0; r < rules.Length; r++)
             {
                 byte mode = rules[r].m_Mode;
                 if (mode == LineStopRule.None)
                     continue;
                 Entity stop = rules[r].m_Stop;
-                if (stop != Entity.Null && stop == terminus)
-                    continue;
                 // Find this rule's waypoint AND its index in one pass — the index is what locates the inbound segment
                 // for a technical stop.
                 int k = -1;
@@ -303,7 +296,7 @@ namespace TransitTimetables
             // Vanilla's baseline, mirroring GetTransportStopSpecification exactly.
             bool canBoard = (ts.m_Flags & StopFlags.Active) != 0;
             bool canAlight = !isWaypoint;
-            if (mode == LineStopRule.SetDownOnly || mode == LineStopRule.Technical) canBoard = false;
+            if (mode == LineStopRule.DropOffOnly || mode == LineStopRule.Technical) canBoard = false;
             if (mode == LineStopRule.PickUpOnly || mode == LineStopRule.Technical) canAlight = false;
 
             TimeActionData d = default;

@@ -6,10 +6,15 @@ namespace TransitTimetables
 {
     // A per-line BOARDING RULE for one stop: may passengers get on here, get off here, both, or neither.
     //
-    //   SetDownOnly   alighting only — you may leave the vehicle or stay on it, but you may not join here
+    //   DropOffOnly   alighting only — you may leave the vehicle or stay on it, but you may not join here
     //   PickUpOnly    boarding only  — you may join here or stay on, but you may not leave here
     //   Technical     an operational call — nobody boards, nobody alights, and NOBODY MAY BE ABOARD AT ALL:
     //                 the last chance to get off is the previous stop. The vehicle still calls, always.
+    //
+    // Any stop may carry any rule, INCLUDING THE TERMINUS. That is deliberate: a terminus is exactly where a real
+    // operator puts a technical call (depot access, driver change), and nothing in the timetable depends on the
+    // terminus being open to passengers — the schedule anchor, the departure hold and the retirement point are all
+    // resolved from the physical stop's BoardingVehicle slot, which these rules never touch.
     //
     // A BUFFER on the LINE entity, keyed by STOP entity — the same shape (and the same reasons) as LineLayover:
     // a physical stop's boarding slot is shared between every line that calls there, so "no boarding" has to be one
@@ -29,7 +34,7 @@ namespace TransitTimetables
         public byte m_Mode;
 
         public const byte None = 0;
-        public const byte SetDownOnly = 1;
+        public const byte DropOffOnly = 1;
         public const byte PickUpOnly = 2;
         public const byte Technical = 3;
 
