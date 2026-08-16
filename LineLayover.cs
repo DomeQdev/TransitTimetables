@@ -3,27 +3,42 @@ using Unity.Entities;
 
 namespace TransitTimetables
 {
-    // A scheduled LAYOVER at one player-chosen mid-route stop ("Terminus B"): the vehicle departs that stop at its
-    // SCHEDULED arrival plus m_HoldMinutes, and every later stop's posted time carries the same shift. Because the
-    // departure is anchored to the scheduled arrival (not the actual one), the wait itself is variable: an on-time
-    // vehicle waits the full X, a late one only the remainder, and a vehicle more than X late leaves as soon as
-    // boarding is done — the stop absorbs delay instead of compounding it, which is what a real timing point does.
+    // A SECOND TIMING POINT ("Terminus B") at one player-chosen mid-route stop.
     //
-    // This is deliberately NOT a second departure grid. One closed loop with a fixed vehicle set must depart both
-    // ends at the same rate or vehicles pile up at one end without bound, so B inherits A's headway by construction
-    // and only the phase (the arrival offset + X) differs. The stop stays an ORDINARY intermediate stop to the rest
-    // of the mod — never isTerminus — which is what routes the wait through the existing m_VehStopHold banking and
-    // keeps it OUT of the measured loop (a layover is a chosen wait, not the route getting slower). The fleet math
-    // is the one place that must ADD it: the cycle genuinely is X minutes longer.
+    // The mod evens a line's vehicles out by extending the layover where they turn round. On a there-and-back line
+    // that happens at BOTH ends, and regulating only at A lets the outbound direction stay tidy while the return
+    // direction bunches for a whole half-loop. Naming a stop as Terminus B makes the dispatch apply the SAME rule
+    // there: a vehicle leaves it one headway after the previous vehicle left it, or after m_MinDwellMinutes of
+    // boarding, whichever is later.
+    //
+    // m_MinDwellMinutes is the FLOOR, not the wait. An on-time vehicle at B waits the floor and no more; a vehicle
+    // that arrives bunched up behind the one in front waits until the headway is restored; a vehicle arriving into a
+    // gap leaves as soon as it has boarded. That is what a real timing point does — it absorbs delay rather than
+    // compounding it — and it is why this is not a fixed "hold for X minutes" any more.
+    //
+    // It is deliberately NOT a second departure grid. One closed loop with a fixed vehicle set must depart both ends
+    // at the same rate or vehicles pile up at one end without bound, so B is driven by the SAME headway A is; only
+    // the phase differs, and the phase looks after itself.
+    //
+    // The stop stays an ORDINARY intermediate stop to the rest of the mod — never isTerminus — which is what keeps
+    // the wait OUT of the measured loop (the m_VehStopHold banking subtracts it) while still letting the cycle math
+    // ADD it: the round trip genuinely is m_MinDwellMinutes longer, and the headway is derived from the cycle.
     //
     // A SEPARATE sibling component — never grow the shipped TimetableSchedule (adding a field to a shipped
-    // ISerializable breaks every save). Leading version byte so THIS one can gain fields later behind a version
-    // gate, the same growth path LineMeasuredTravel/CustomPeakSchedule follow. Lives on the LINE entity, not the
-    // stop: a stop's boarding slot is shared across lines, and the layover is one line's choice.
+    // ISerializable breaks every save). Leading version byte so THIS one can gain fields later behind a version gate,
+    // the same growth path LineMeasuredTravel / CustomPeakSchedule / LineFleetPlan follow. Lives on the LINE entity,
+    // not the stop: a stop's boarding slot is shared across lines, and the timing point is one line's choice.
+    //
+    // FIELD NAME NOTE: the serialized field is still m_HoldMinutes because renaming it is a save-format change for no
+    // benefit. Its MEANING changed from "wait exactly this long past the scheduled arrival" to "wait at least this
+    // long", which is why the accessor below is the name the rest of the mod uses.
     public struct LineLayover : IComponentData, ISerializable
     {
-        public Entity m_Stop;        // the chosen layover stop (a stop entity, like TimetableSchedule.m_TerminusStop)
-        public ushort m_HoldMinutes; // X — scheduled minutes of layover past the scheduled arrival
+        public Entity m_Stop;        // the chosen second timing point (a stop entity, like TimetableSchedule.m_TerminusStop)
+        public ushort m_HoldMinutes; // MINIMUM minutes of layover at that stop; 0 means "no Terminus B" (component removed)
+
+        // The live meaning of m_HoldMinutes, so call sites read as what they do.
+        public int MinDwellMinutes => m_HoldMinutes;
 
         private const byte kVersion = 1;
 

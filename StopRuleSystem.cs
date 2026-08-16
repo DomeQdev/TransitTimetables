@@ -185,10 +185,10 @@ namespace TransitTimetables
             DynamicBuffer<LineStopRule> rules = EntityManager.GetBuffer<LineStopRule>(line, isReadOnly: true);
             if (rules.Length == 0)
                 return;
-            // Only while the line's TIMETABLE is on. The rules are set from the stop board, and the board only draws
-            // its controls on timetabled rows — so enforcing them on a line whose timetable was switched off would
+            // Only while the line's SERVICE PLAN is on. The rules are set from the stop board, and the board only draws
+            // its controls on managed rows — so enforcing them on a line whose plan was switched off would
             // leave a live restriction with no visible switch to undo it. The buffer stays in the save, so switching
-            // the timetable back on brings the rules back exactly as they were.
+            // the plan back on brings the rules back exactly as they were.
             if (!EntityManager.HasComponent<TimetableSchedule>(line)
                 || !EntityManager.GetComponentData<TimetableSchedule>(line).m_Enabled)
                 return;

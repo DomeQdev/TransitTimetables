@@ -15,10 +15,9 @@ namespace TransitTimetables
     {
         public const string Section = "Main";
         public const string GroupWindows = "Peak windows";
-        // GroupRealism is BACK. Both settings that lived in it were removed in v0.5's coherence pass, making the
-        // measured-loop correction unconditional. Restored 2026-08-03 at the user's request, DEFAULT OFF for both,
-        // which returns the pre-0.5 behaviour: the mod measures the real loop either way and always SHOWS the gap,
-        // but only acts on it when asked. See the notes on each property.
+        // GroupRealism is EMPTY now — both settings that lived in it are [SettingsUIHidden] storage-only fields (see
+        // ProvisionRealFleet / RealisticTravelTime). The constant survives because Mod.cs registers a locale entry for
+        // it and because an empty group renders nothing; deleting it would be pure churn for no user-visible change.
         public const string GroupRealism = "Realistic travel time";
         public const string GroupStops = "Stops";
         public const string GroupCompat = "Compatibility";
@@ -37,12 +36,9 @@ namespace TransitTimetables
         public bool Enabled { get; set; } = true;
 
         // ---- Vehicle-count management ----
-        // RETIRED to migration-only, 2026-08-03. This dropdown replaced the pre-0.5 "Manage vehicle count" checkbox
-        // AND absorbed "Provision fleet", on the reasoning that sizing a line from the game's ESTIMATE while posting
-        // times measured from its REAL loop was incoherent. That reasoning is void now that both realism settings are
-        // separate opt-ins again: "manage the count, from the estimate" is a coherent, useful mode and is the one most
-        // players want. So the checkbox is back below, and this field survives ONLY to carry a stored 0.5.x choice
-        // across. It is never shown and never read outside Migrate().
+        // RETIRED to migration-only. This dropdown briefly replaced the "Manage vehicle count" checkbox below; the
+        // checkbox is the live setting again and this field survives ONLY to carry a stored 0.5.x choice across. It is
+        // never shown and never read outside Migrate().
         [SettingsUIHidden]
         public VehicleCountMode VehicleCounts { get; set; } = VehicleCountMode.Unset;
 
@@ -59,11 +55,12 @@ namespace TransitTimetables
         [SettingsUISection(Section, GroupGeneral)]
         public bool ManageVehicleCount { get; set; } = true;
 
-        // RESTORED to the Options page (was [SettingsUIHidden] through v0.5.x, when fleet sizing to the measured loop
-        // became unconditional). Default stays false, so an existing .coc already holds the right value and nobody's
-        // stored preference is reinterpreted. This is the setting that SPENDS: a line whose real loop is ~2x its
-        // estimate needs about twice the vehicles and twice the upkeep to hold the same headway.
-        [SettingsUISection(Section, GroupRealism)]
+        // RETIRED to storage-only. It asked whether to size a line's fleet from the MEASURED loop rather than the
+        // game's estimate — a question that only exists while the mod derives the count. It does not any more: the
+        // player states the count and the mod derives the HEADWAY from the measured loop, always, because the headway
+        // IS cycle/vehicles and computing it from a number the game is 2x wrong about would make the regulation
+        // meaningless. Kept (never deleted, never retyped) so the stored value in an existing .coc still decodes.
+        [SettingsUIHidden]
         public bool ProvisionRealFleet { get; set; } = false;
 
         // RESTORED. Deleted outright in v0.5's coherence pass, so as far as the CODE is concerned this is a new
@@ -76,12 +73,11 @@ namespace TransitTimetables
         // default below only ever applies to someone who never set it pre-0.5, and it is why the realism notice
         // gates on the VALUES rather than on the presence of the key.
         //
-        // The v0.4 note explaining why it shipped OFF gave two reasons. The FIRST no longer applies: it warned that
-        // per-stop offsets interleaved measured and estimated values and left the board internally incoherent. Per-stop
-        // measurement has since been deleted and every posted offset now derives from one number, the line loop, via a
-        // single additive ladder. The SECOND still stands — this changes what the whole user base sees — which is why
-        // it stays opt-in rather than becoming the default now that its blocker is gone.
-        [SettingsUISection(Section, GroupRealism)]
+        // RETIRED to storage-only, for the same reason as ProvisionRealFleet above. It gated whether POSTED TIMES used
+        // the measured loop; there are no posted times any more — a headway-regulated line has no clock grid — and the
+        // one thing the loop still feeds (the headway itself, and the "reaches you ~N minutes after the terminus"
+        // figure on the stop board) cannot sensibly be switched off. Kept so an existing .coc still decodes.
+        [SettingsUIHidden]
         public bool RealisticTravelTime { get; set; } = false;
 
         // Has the one-time "vehicle counts are changing" notice been answered? Global rather than per-city on purpose:
@@ -97,6 +93,14 @@ namespace TransitTimetables
         // global. Never written until the notice is actually answered.
         [SettingsUIHidden]
         public bool RealismNoticeAnswered { get; set; } = false;
+
+        // Has the one-time "this mod now works by vehicle count" notice been answered? A THIRD flag rather than a reuse
+        // of either above, and for the same reason the second one existed: everyone who answered an earlier notice
+        // already has those flags set to true, and they are precisely the players this notice exists for — they ran a
+        // version that asked for a headway and would otherwise find the panel replaced with no explanation. Global, not
+        // per-city, because what it describes is a property of the mod. Never written until the notice is answered.
+        [SettingsUIHidden]
+        public bool CountModelNoticeAnswered { get; set; } = false;
 
         // ---- Clean uninstall ----
         // One-shot button: wipe every trace of the mod from the CURRENT save — revert each line to vanilla (release held
@@ -145,30 +149,26 @@ namespace TransitTimetables
 
         // CS2's own pathfinder estimate of how long a line takes systematically UNDERSHOOTS the real, simulated loop
         // (live-measured ~1.7x on sparse lines to ~2.5x on stop-dense ones — the acceleration and braking at every stop
-        // that a free-flow estimate ignores). The mod measures each line's real loop and corrects for it. The correction
-        // is RT-invariant (frame-based), so it composes with the slow-time compatibility below.
-        //
-        // There is NO LONGER a toggle for correcting POSTED TIMES: it is always on. The toggle ("Realistic travel time")
-        // asked the player whether they wanted the mod to tell the truth, which is not a real choice — it costs nothing,
-        // has no downside, and leaving it off built the whole timetable on a number the game itself is wrong about.
-        // It was only ever off by default because the correction was incoherent: offsets were picked PER STOP (measured
-        // where a stop had samples, raw estimate elsewhere), so one route interleaved two incompatible clocks. That is
-        // fixed — every offset now derives from the line's single measured loop via the ladder in HoldAllStops, and the
-        // dispatch publishes what it used so the board cannot disagree with the vehicles.
+        // that a free-flow estimate ignores). The mod measures each line's real loop and uses the measurement. That is
+        // no longer optional and has no toggle: the headway a line runs IS its cycle divided by its vehicles, so a loop
+        // figure that is half the truth would space vehicles at half the interval they can keep and the regulation
+        // would never bind at all. The measurement is RT-invariant (frame-based), so it composes with the slow-time
+        // compatibility below.
         //
         // Force buses to physically STOP even when nobody is boarding or alighting. Vanilla lets a bus SKIP an empty
-        // stop — it only slows and rolls through, never pulling in — and a skipped stop is never held to its scheduled
-        // time, so the bus runs ahead of its timetable. That is worst at the TERMINUS, which anchors the whole schedule,
-        // so the terminus is now ALWAYS forced to stop (no setting for it). This toggle extends the forced stop to EVERY
-        // stop on a timetabled line: every posted time is then honoured, at the cost of a short dwell at each empty stop
-        // (lines run a little slower). OFF by default. Buses/road vehicles only — trains, trams, ships and planes already
-        // stop at every station in the base game.
+        // stop — it only slows and rolls through, never pulling in. That matters most at a TIMING POINT: a vehicle that
+        // rolls past its terminus never enters Boarding, so the mod never gets to space it and the departure it was
+        // meant to regulate simply does not happen. Both timing points are therefore ALWAYS forced to stop (no setting
+        // for it). This toggle extends the forced stop to EVERY stop on a managed line, at the cost of a short dwell at
+        // each empty one — which lengthens the loop, so the headway widens a little. OFF by default. Buses/road
+        // vehicles only — trains, trams, ships and planes already stop at every station in the base game.
         [SettingsUISection(Section, GroupStops)]
         public bool StopAtEveryStop { get; set; } = false;
 
-        // MAXIMUM extra time a vehicle may stand at a stop past its posted departure, waiting for passengers who are
-        // already boarding. It is a CEILING on lateness, not a floor on dwell: a vehicle with nobody boarding still
-        // leaves exactly on its posted minute.
+        // MAXIMUM extra time a vehicle may stand at a stop once it is due to leave, waiting for passengers who are
+        // ALREADY boarding. It is a CEILING, not a floor: a vehicle with nobody boarding leaves the moment it is due.
+        // At an ordinary stop "due" means "as soon as it arrived", which is what makes an ordinary stop take exactly as
+        // long as the boarding does and no longer. At a timing point it means "once its headway is up".
         //
         // This replaced a "minimum dwell" plus an unconditional force-departure. That combination was actively harmful:
         // the base game counts a citizen as a passenger the moment they START WALKING to the vehicle, so forcing the
@@ -177,7 +177,7 @@ namespace TransitTimetables
         //
         // The mechanism is now the GAME'S OWN, not a fight with it: vanilla already waits for boarding passengers after
         // the scheduled time and gives up 1800 frames later (StopBoarding's cutoff). We simply ANCHOR that window so it
-        // expires at this setting instead of at vanilla's ~10 minutes — see HoldStop's GO branch. Everything in between
+        // expires at this setting instead of at vanilla's ~10 minutes — see ReleaseVehicle. Everything in between
         // (the widening boarding radius, the wait for passengers not yet seated) is stock behaviour, untouched.
         //
         // Split road/rail so rail can be raised independently — a train or metro exchanging a full platform takes far
@@ -195,6 +195,25 @@ namespace TransitTimetables
         [SettingsUISlider(min = 0f, max = 10f, step = 1f, unit = "integer")]
         [SettingsUISection(Section, GroupStops)]
         public int MaxDwellRail { get; set; } = 3;
+
+        // MINIMUM LAYOVER AT A TIMING POINT. A vehicle that reaches the terminus exactly on its headway still stands
+        // here for at least this long before it sets off again.
+        //
+        // It is not padding. Without a floor the regulation has NO SLACK TO GIVE BACK: the headway is cycle/vehicles,
+        // and if the cycle is exactly the driving time then a vehicle that loses two minutes in traffic can never
+        // recover them — every vehicle behind it inherits the delay and the line drifts permanently. A minute or two
+        // of scheduled standing time is the buffer a real operator builds into every turn for exactly this reason, and
+        // it is what lets a late vehicle catch up instead of dragging the whole line down with it.
+        //
+        // The cost is honest and worth stating: this time is part of the round trip, so it is part of the headway. At
+        // 2 minutes on a line with 10 vehicles the headway is 12 seconds wider than it would otherwise be — nothing.
+        // On a 2-vehicle shuttle it is a full minute wider. Set it to 0 only if you want vehicles to turn round the
+        // instant they arrive and you accept that the line can never recover from a delay.
+        //
+        // A Terminus B, if you set one, carries its OWN minimum (the number on the stop board) and both are counted.
+        [SettingsUISlider(min = 0f, max = 15f, step = 1f, unit = "integer")]
+        [SettingsUISection(Section, GroupStops)]
+        public int MinTerminusDwell { get; set; } = 2;
 
         // Compatibility: adapt the timetable's frame<->minute math to slow-time mods (Time2Work / "Realistic Trips")
         // that lengthen the in-game day. Default OFF, so the base mod runs its pure vanilla-clock timing for the vast
@@ -263,20 +282,20 @@ namespace TransitTimetables
             StopAtEveryStop = false;
             MaxDwellRoad = 3; // keep in lockstep with the initializers above (this runs on "reset to defaults")
             MaxDwellRail = 3;
+            MinTerminusDwell = 2;
             RealisticTripsCompat = false;
         }
     }
 
-    // Who sizes a timetabled line's fleet. Backed by int (the default) — the settings widget casts to int, and an
-    // enum-typed property with no attribute already renders as a dropdown, so [SettingsUIDropdown] is not wanted here
-    // (it selects a different widget that demands a runtime item source).
-    // TWO STATES, deliberately. A third ("the mod sizes most lines but respects any line I set by hand") was designed
-    // and rejected: it makes one line silently behave differently from its nineteen neighbours with nothing on screen
-    // to say why, and it re-admits the incoherent case this redesign exists to remove — a hand-typed count that
-    // contradicts the line's own headway. The headway IS the cost lever. Want fewer vehicles? Widen the interval and
-    // the schedule stays true. A per-window count instead of an interval was also considered and dropped: an exact
-    // count below what the headway needs guarantees missed departures, and a count that steps down at a window
-    // boundary has nothing to damp it, so it would retire vehicles and rebuy them every single day.
+    // LEGACY, migration-only (see the VehicleCounts property). Who sizes a line's fleet. Backed by int (the default) —
+    // the settings widget casts to int, and an enum-typed property with no attribute already renders as a dropdown.
+    //
+    // HISTORICAL NOTE, kept because it records a decision that has since been REVERSED and the reversal is the whole
+    // point of the current mod: this enum's doc used to argue that the headway is the cost lever and that a per-window
+    // vehicle COUNT should never be exposed, because "an exact count below what the headway needs guarantees missed
+    // departures". That objection only bites if the mod is also promising a fixed clock grid — a missed departure is a
+    // departure that was PRINTED and not run. Nothing is printed now, so a line with fewer vehicles simply runs a wider
+    // headway, which is not a failure but the correct and visible consequence of the choice. The count is the lever.
     public enum VehicleCountMode
     {
         // ORDINAL 0 IS LOAD-BEARING. Colossal.Json writes ordinal 0 whenever it cannot parse a stored enum literal, so

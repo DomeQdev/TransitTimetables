@@ -13,8 +13,8 @@ using Unity.Entities;
 namespace TransitTimetables
 {
     // Fleet-control helper (name kept for compatibility). No longer schedules anything itself — TimetableDispatchSystem
-    // owns the timetables and calls the helpers here:
-    //   * LineStableDurationUnits(line) — the line's round-trip time in route units, for deriving the fleet.
+    // owns the service plans and calls the helpers here:
+    //   * LineStableDurationUnits(line) — the line's round-trip time in route units (the game's own estimate of it).
     //   * TrySetLineFleet(line, n) — set a line's vehicle count to n via the vanilla vehicle-count POLICY (the exact
     //     path the in-game slider uses), so vehicles spawn from depots / retire the same as dragging the slider.
     // The only thing its own OnUpdate does is the optional read-only shared-stop analysis.

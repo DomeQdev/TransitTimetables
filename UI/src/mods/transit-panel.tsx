@@ -6,43 +6,46 @@ import ICON from "../transittimetables-icon.svg";
 
 const G = "TransitParams";
 
-// Selected LINE timetable (drives the editor injected into the line panel).
+// Selected LINE service plan (drives the editor injected into the line panel).
 const selHas$ = bindValue<boolean>(G, "selHas", false);
 const selTtEnabled$ = bindValue<boolean>(G, "selTtEnabled", false);
-const selTtFirst$ = bindValue<number>(G, "selTtFirst", 300);
-const selTtPeak$ = bindValue<number>(G, "selTtPeak", 8);
-const selTtOffPeak$ = bindValue<number>(G, "selTtOffPeak", 12);
-const selTtNight$ = bindValue<number>(G, "selTtNight", 30);
-const selTtInterval$ = bindValue<number>(G, "selTtInterval", 0);
-const selTtFleet$ = bindValue<number>(G, "selTtFleet", 0);
-const selTtNext$ = bindValue<string>(G, "selTtNext", "");
+// THE PLAN: vehicles per time-of-day window. These are the only numbers the player sets now — the headway is what
+// comes out the other end, not what goes in.
+const selPeakVeh$ = bindValue<number>(G, "selPeakVeh", 6);
+const selOffPeakVeh$ = bindValue<number>(G, "selOffPeakVeh", 4);
+const selNightVeh$ = bindValue<number>(G, "selNightVeh", 2);
+// ...and what the mod made of them. All three are produced by the dispatch and merely displayed here.
+const selTtFleet$ = bindValue<number>(G, "selTtFleet", 0);     // the count it applied
+const selTtServing$ = bindValue<number>(G, "selTtServing", 0); // how many are really out
+const selTtHeadway$ = bindValue<number>(G, "selTtHeadway", 0); // resulting spacing, minutes (0 = not regulating yet)
+const selTtNextMin$ = bindValue<number>(G, "selTtNextMin", -1);
 const selTtRealInfo$ = bindValue<string>(G, "selTtRealInfo", "");
 const selTtTerminus$ = bindValue<number>(G, "selTtTerminus", 0);
 const selTtLayover$ = bindValue<number>(G, "selTtLayover", 0);
 const selTtLayoverMin$ = bindValue<number>(G, "selTtLayoverMin", 0);
 // Stop rules left on stops this line no longer serves — invisible on the stop board (no row exists for them), so the
-// line panel is their only home. Same problem, same shape as the layover's orphan state.
+// line panel is their only home. Same problem, same shape as Terminus B's orphan state.
 const selTtRuleOrphans$ = bindValue<number>(G, "selTtRuleOrphans", 0);
-// Per-line custom peak (PR #5): enable + interval + two hour windows.
+// Per-line custom peak: enable + its own vehicle count + two hour windows.
 const selCustomPeakEnabled$ = bindValue<boolean>(G, "selCustomPeakEnabled", false);
-const selCustomPeakInterval$ = bindValue<number>(G, "selCustomPeakInterval", 5);
+const selCustomPeakVeh$ = bindValue<number>(G, "selCustomPeakVeh", 8);
 const selCustomPeakStart1$ = bindValue<number>(G, "selCustomPeakStart1", 7);
 const selCustomPeakEnd1$ = bindValue<number>(G, "selCustomPeakEnd1", 9);
 const selCustomPeakStart2$ = bindValue<number>(G, "selCustomPeakStart2", 16);
 const selCustomPeakEnd2$ = bindValue<number>(G, "selCustomPeakEnd2", 18);
 
-// Which windows apply + their hours, so the editor shows only relevant intervals and communicates the times.
+// Which windows apply + their hours, so the editor shows only relevant rows and communicates the times.
 const selSchedule$ = bindValue<number>(G, "selSchedule", 2); // 0=Day, 1=Night, 2=DayAndNight
 const peakHours$ = bindValue<string>(G, "peakHours", "");
 const nightHours$ = bindValue<string>(G, "nightHours", "");
 
-// Selected STOP departure board (drives the floating panel).
+// Selected STOP arrivals board (drives the floating panel).
 const selStopHas$ = bindValue<boolean>(G, "selStopHas", false);
 const selStopBoard$ = bindValue<string>(G, "selStopBoard", "[]");
 const autoOpen$ = bindValue<number>(G, "autoOpen", 0);
-// Selected VEHICLE schedule status (community request: is this train late, when is it due next).
+// Selected VEHICLE spacing status.
 const selVehInfo$ = bindValue<string>(G, "selVehInfo", "");
-// One-time migration notice. A counter rather than a flag, so a late-mounting host still sees the change.
+// One-time notice. A counter rather than a flag, so a late-mounting host still sees the change.
 const noticeSeq$ = bindValue<number>(G, "noticeSeq", 0);
 // Last counter value we have RAISED a dialog for. Module-level, NOT a useRef inside the component, and this matters
 // twice over:
@@ -70,31 +73,20 @@ function useOpen() {
     return _open;
 }
 
-const hm = (min: number) => {
-    let m = ((Math.round(min) % 1440) + 1440) % 1440;
-    const h = Math.floor(m / 60), mm = m % 60;
-    return (h < 10 ? "0" : "") + h + ":" + (mm < 10 ? "0" : "") + mm;
-};
-
 const stepBtn = {
     cursor: "pointer", width: "24rem", height: "22rem", fontSize: "14rem", color: "white",
     background: "rgba(255,255,255,0.12)", borderRadius: "4rem",
 } as const;
 
-// Coarse step (±1h on the clock, ±10 on an interval) — wider so a two-character label fits, smaller type so it sits
-// level with the ± glyphs. Paired with stepBtn everywhere: coarse outside, fine inside, value in the middle.
+// Coarse step (±1h on a window edge, ±5 on a vehicle count) — wider so a two-character label fits, smaller type so it
+// sits level with the ± glyphs. Paired with stepBtn everywhere: coarse outside, fine inside, value in the middle.
 const stepBtnCoarse = {
     cursor: "pointer", width: "30rem", height: "22rem", fontSize: "11rem", color: "white",
     background: "rgba(255,255,255,0.12)", borderRadius: "4rem",
 } as const;
 
-// First departure is a CLOCK time, so stepping WRAPS rather than clamping: -5 from 00:00 gives 23:55, which is how
-// you reach a late-night first departure without 280 clicks. The C# trigger clamps to 0..1439 anyway, and this is
-// already normalized into that range, so the clamp is a no-op.
-const wrapMin = (v: number) => ((Math.round(v) % 1440) + 1440) % 1440;
-
-// Native close button: the game's Close glyph as a mask tinted with the panel text colour (matches the native
-// panels, which use url(Media/Glyphs/...) masks — not a literal "X"). pointerEvents:auto for reliable clicks.
+// Native close button: the game's Close glyph as a mask tinted with the panel text colour (matches the native panels,
+// which use url(Media/Glyphs/...) masks — not a literal "X"). pointerEvents:auto for reliable clicks.
 const CloseGlyph = ({ onClick }: { onClick: () => void }) => (
     <button
         onClick={onClick}
@@ -109,7 +101,12 @@ const CloseGlyph = ({ onClick }: { onClick: () => void }) => (
     </button>
 );
 
-const IntervalRow = ({ label, hours, value$, trig }: { label: string; hours?: string; value$: any; trig: string }) => {
+// One window's VEHICLE COUNT. ±5 outside, ±1 inside — the same coarse/fine idiom the hour windows use, sized for the
+// range that actually matters: a city line runs somewhere between one and about forty vehicles, so ±5 crosses that
+// range in a handful of clicks while ±1 still lands on any exact number. Floors at 1: "none in this window" is what
+// the line's own day/night schedule is for, and a zero would ask the game for an undefined vehicle interval.
+const CountRow = ({ label, hours, value$, trig }: { label: string; hours?: string; value$: any; trig: string }) => {
+    const t = useT();
     const v = useValue(value$) as number;
     const set = (nv: number) => trigger(G, trig, Math.max(1, Math.round(nv)));
     return (
@@ -118,15 +115,14 @@ const IntervalRow = ({ label, hours, value$, trig }: { label: string; hours?: st
                 <div style={{ fontSize: "13rem" }}>{label}</div>
                 {hours ? <div style={{ fontSize: "10rem", opacity: 0.5 }}>{hours}</div> : null}
             </div>
-            {/* ±10 keeps a two-digit headway cheap to reach (16 min = +10 then +1 x6, not sixteen clicks), while ±1
-                still lands on any exact minute. Adds/subtracts a flat 10 rather than snapping to a multiple of it, so
-                the ones digit you dialled in survives: 16 -> 26 -> 16. `set` already clamps at 1. Margins, not `gap`
-                (cohtml has no flex gap). Mirrors the First departure row above: coarse outside, fine inside. */}
-            <button style={{ ...stepBtnCoarse, marginRight: "5rem" }} onClick={() => set(v - 10)}>−10</button>
+            {/* Margins, not `gap` (cohtml has no flex gap). */}
+            <button style={{ ...stepBtnCoarse, marginRight: "5rem" }} onClick={() => set(v - 5)}>−5</button>
             <button style={stepBtn} onClick={() => set(v - 1)}>−</button>
-            <div style={{ width: "54rem", textAlign: "center", fontSize: "13rem" }}>{Math.round(v)} min</div>
+            <div style={{ width: "54rem", textAlign: "center", fontSize: "13rem" }}>
+                {Math.round(v)} {t("vehiclesUnit", "veh.")}
+            </div>
             <button style={stepBtn} onClick={() => set(v + 1)}>+</button>
-            <button style={{ ...stepBtnCoarse, marginLeft: "5rem" }} onClick={() => set(v + 10)}>+10</button>
+            <button style={{ ...stepBtnCoarse, marginLeft: "5rem" }} onClick={() => set(v + 5)}>+5</button>
         </div>
     );
 };
@@ -136,7 +132,7 @@ const IntervalRow = ({ label, hours, value$, trig }: { label: string; hours?: st
 const wrapHr = (v: number) => ((Math.round(v) % 24) + 24) % 24;
 const hhmm = (h: number) => (Math.round(h) < 10 ? "0" : "") + Math.round(h) + ":00";
 
-// One custom-peak WINDOW (PR #5): a start-hour and end-hour range, each stepped ±1h with wrap.
+// One custom-peak WINDOW: a start-hour and end-hour range, each stepped ±1h with wrap.
 const WindowRow = ({ label, start$, end$, trigStart, trigEnd }:
     { label: string; start$: any; end$: any; trigStart: string; trigEnd: string }) => {
     const t = useT();
@@ -156,25 +152,26 @@ const WindowRow = ({ label, start$, end$, trigStart, trigEnd }:
     );
 };
 
-// The timetable editor — injected into the native line info panel. Renders nothing unless a transport line is
-// selected (self-gates on selHas, so it's inert on non-line selections and work routes).
 // The "real loop" line. C# sends NUMBERS, not a sentence, and the whole sentence is built here from a per-language
 // template — this was the last user-facing text in the mod that was assembled in C# and therefore English in all 11
 // translated languages. It cannot be done by translating fragments and gluing them in English order, because clause
 // order differs between languages, so each language gets a complete template with {placeholders}.
+//
+// It matters more than it used to. The headway a player gets for N vehicles is loop/N, so this figure is the entire
+// explanation of why ten vehicles buy the interval they buy — and of why a line whose route the game underestimates by
+// 2x needs about twice the vehicles a player would guess.
 const RealInfo = ({ raw }: { raw: string }) => {
     const t = useT();
     if (!raw) return null;
-    let d: { real: number; est: number; corr: string; meas: boolean; mode: string; n: number; laps?: number; need?: number; stage?: number; need2?: number; wlaps?: number; rtt?: boolean };
+    let d: { real: number; est: number; corr: string; meas: boolean; mode: string; n: number; laps?: number; need?: number; stage?: number; need2?: number; wlaps?: number };
     try { d = JSON.parse(raw); } catch { return null; }
     if (!d || typeof d.real !== "number") return null;
     const vars = { real: d.real, est: d.est, corr: d.corr, n: d.n, laps: d.laps ?? 0, need: d.need ?? 0, need2: d.need2 ?? 0, wlaps: d.wlaps ?? 0 };
-    // THREE STAGES, matching the correction ladder in LineCorrection. The point is that the vehicle count in the
-    // sentence after this one comes from a DIFFERENT estimator at each stage, and the player deserves to know which:
-    //   0  nothing measured yet -- the count is derived from the game's own estimate, not from anything observed
-    //   1  the conservative anchor is driving it. It errs LOW on purpose, so the count will usually RISE when the
-    //      median takes over. Saying so here is the whole reason this stage has its own text: an unannounced jump
-    //      in vehicle count reads as the mod breaking.
+    // THREE STAGES, matching the ladder in LineCorrection. The point is that the loop figure — and therefore the
+    // headway derived from it — comes from a DIFFERENT estimator at each stage, and the player deserves to know which:
+    //   0  nothing measured yet -- the spacing is derived from the game's own estimate, not from anything observed
+    //   1  the conservative anchor is driving it. It errs LOW on purpose, so the headway will usually WIDEN when the
+    //      median takes over. Saying so here is the whole reason this stage has its own text.
     //   2  the median is driving it. Still a rolling window, so it can drift -- "measured", never "final".
     const stage = d.stage ?? (d.meas ? 2 : 0);
     const head =
@@ -182,33 +179,21 @@ const RealInfo = ({ raw }: { raw: string }) => {
         : stage === 1 ? t("loopRefining", "Real loop is about {real} min, still refining ({wlaps} of {need2} laps).", vars)
         : t("loopMeasured", "Real loop is {real} min, measured ({corr}x the {est}-min estimate).", vars);
     const tail =
-        d.mode === "prov" ? t("provisioning", "Provisioning ~{n} vehicles for it.", vars)
-        : d.mode === "notmine" ? t("notSetByMod", "This headway needs ~{n} vehicles. This mod is not setting the count.", vars)
-        : t("sizingSoon", "Sizing this line as soon as its duration estimate settles.");
-    // Only stage 1 gets a caveat, and it is specifically about the count RISING. Stage 0 already says it is
+        d.mode === "prov" ? t("provisioning", "Running {n} vehicles on it.", vars)
+        : d.mode === "notmine" ? t("notSetByMod", "This mod is not setting this line's vehicle count.", vars)
+        : t("sizingSoon", "Setting this line's vehicle count as soon as its duration estimate settles.");
+    // Only stage 1 gets a caveat, and it is specifically about the spacing WIDENING. Stage 0 already says it is
     // measuring; stage 2 has nothing left to warn about.
     const caveat = stage === 1
-        ? " " + t("countMayRise", "That count is deliberately cautious and may rise once measuring completes.", vars)
-        : "";
-    // The measurement exists but nothing is using it. Worth saying plainly and permanently: anyone who ran 0.5.x had
-    // this applied unconditionally, and it is opt-in again as of this version. Without the warning the panel would
-    // quote a real-loop figure the player would reasonably assume was in effect.
-    const rttOff = d.rtt === false
-        ? t("rttOffWarning",
-            "Realistic travel time is OFF, so posted times use the game's estimate rather than this measured loop. Turn it on in the mod's Options to use the measured times.",
-            vars)
+        ? " " + t("headwayMayWiden", "That loop is deliberately cautious, so the spacing may widen once measuring completes.", vars)
         : "";
     return (
         <div style={{ fontSize: "11rem", color: "rgb(224, 186, 120)", marginBottom: "6rem", lineHeight: 1.35 }}>
             {head + " " + tail + caveat}
-            {rttOff ? <div style={{ marginTop: "4rem", color: "rgb(232, 168, 96)" }}>{rttOff}</div> : null}
         </div>
     );
 };
 
-// Injected into the native PublicTransportVehicleSection, so it shows when a bus/train/tram is selected. Renders
-// nothing unless that vehicle is on a line with an ENABLED timetable, so it is inert on freight and on untimetabled
-// lines. C# sends numbers only; the sentence is assembled here from a per-language template, same as RealInfo.
 // One native-looking info row: label on the left, value on the right. Mirrors the game's own Owner / Destination /
 // Line rows in the same panel rather than sitting under them as a paragraph of loose text.
 const InfoRow = ({ label, children }: { label: string; children: any }) => (
@@ -218,12 +203,11 @@ const InfoRow = ({ label, children }: { label: string; children: any }) => (
     </div>
 );
 
-// The status pill. Colour IS the message — you should be able to read a line's health from across the panel without
+// The status pill. Colour IS the message — you should be able to read a vehicle's state from across the panel without
 // parsing a sentence — so each state gets a distinct, conventional one:
-//   red    late
-//   green  on time
-//   grey   standing at the terminus waiting for its booked minute (the normal state of a terminus, not a fault)
-//   amber  running ahead of the posted time and being held back onto it at an ordinary stop
+//   green  correctly spaced from the vehicle in front
+//   amber  bunched up behind it, or trailing a gap
+//   grey   standing at a timing point waiting for its slot in the spacing (the normal state of a terminus)
 const Chip = ({ text, tone }: { text: string; tone: "red" | "green" | "grey" | "amber" }) => {
     const bg = tone === "red" ? "rgba(200, 70, 60, 0.95)"
         : tone === "green" ? "rgba(60, 160, 90, 0.95)"
@@ -239,80 +223,54 @@ const Chip = ({ text, tone }: { text: string; tone: "red" | "green" | "grey" | "
     );
 };
 
-const VehicleSchedule = ({ raw }: { raw: string }) => {
+// Injected into the native PublicTransportVehicleSection, so it shows when a bus/train/tram is selected. Renders
+// nothing unless that vehicle is on a managed line, so it is inert on freight and on unmanaged lines.
+//
+// THERE IS NO "LATE" HERE, and that is a deliberate position rather than a missing feature. Nothing was promised for a
+// particular minute, so nothing can miss it. What can honestly be said is whether this vehicle is correctly spaced
+// from the one in front of it — which is the thing the mod is actually managing — and, when it is standing still,
+// whether that is the regulation holding it or simply passengers boarding.
+const VehicleSpacing = ({ raw }: { raw: string }) => {
     const t = useT();
     if (!raw) return null;
-    let d: { onTt: boolean; brd?: boolean; term?: boolean; late: number; next: number; stage: number };
+    let d: { held: boolean; hold: number; term: boolean; haveGap: boolean; gap: number; h: number; stage: number };
     try { d = JSON.parse(raw); } catch { return null; }
     if (!d) return null;
 
-    // No slot yet. The game spawns from the depot onto the nearest stop, so a vehicle that joined mid route runs
-    // unscheduled until it first reaches the terminus. It is not late, it has no schedule to be late against —
-    // so it gets the neutral chip, not a warning one.
-    if (!d.onTt)
-        return (
-            <InfoRow label={t("vehStatusLabel", "Schedule")}>
-                <Chip tone="grey" text={t("vehChipNoSlot", "not on timetable yet")} />
-            </InfoRow>
-        );
-
-    const late = Math.round(d.late);
-    const hm = (m: number) => {
-        const x = ((Math.round(m) % 1440) + 1440) % 1440;
-        const h = Math.floor(x / 60), mm = x % 60;
-        return (h < 10 ? "0" : "") + h + ":" + (mm < 10 ? "0" : "") + mm;
-    };
-    const vars = { n: Math.abs(late), at: hm(d.next) };
-    // STATIONARY AT A STOP is a different sentence, not a variant of the same one. While boarding, the scheduled
-    // minute is this stop's DEPARTURE, and an early vehicle is being held here on purpose to keep the timetable.
-    // Saying "running 2 min early" about a vehicle the player can see standing still reads as a fault; it is the
-    // mod working. Reported from a station: "it said the vehicle is x minutes early while sitting in the station".
-    // A DEVIATION IS ONLY CLAIMED WHERE IT IS OBSERVABLE.
-    //
-    // At a stop, "now" against that stop's scheduled DEPARTURE is exact, and both directions are meaningful.
-    //
-    // In transit it is not. The offsets are departure times, so `now - nextDeparture` while moving is simply the
-    // countdown to that departure, and reporting it as earliness produced the nonsense a punctual bus two minutes
-    // into a ten-minute leg was "8 min early", shrinking to zero on every single leg.
-    //
-    // Nor can lateness be carried forward from the last stop: the offsets come from the MEASURED loop, which is an
-    // average, so a leg run in lighter traffic or with quicker boarding recovers time. A vehicle that left 2 min
-    // late can and does arrive on time, and asserting the old figure would be stale.
-    //
-    // What IS observable while moving: once the clock passes the next stop's scheduled departure and the vehicle
-    // still is not there, it is behind by exactly that overrun, without knowing where along the leg it is. That is
-    // a lower bound which only grows until it arrives. Before that moment, no claim at all.
-    // LATE is the one deviation that is true in both situations, so it is decided first and identically.
     let tone: "red" | "green" | "grey" | "amber" = "green";
     let text: string;
-    if (late > 0) {
-        tone = "red";
-        text = t("vehChipLate", "{n} min late", vars);
-    } else if (d.brd) {
-        // Standing still, before its booked minute. At the terminus that is simply what a terminus does; anywhere
-        // else it means the vehicle ran the leg quicker than the posted time and is being pulled back onto it.
-        tone = d.term ? "grey" : "amber";
-        text = late < 0
-            ? (d.term ? t("vehChipWaiting", "departs {at}", vars) : t("vehChipEarly", "{n} min early", vars))
-            : t("vehChipOnTime", "on time");
+    if (d.held) {
+        // Being held at a timing point. At the terminus that is simply what a terminus does; at Terminus B it is the
+        // same mechanism at the other end of the line. Neither is a fault, so neither gets a warning colour.
+        tone = "grey";
+        const vars = { n: Math.max(0, Math.round(d.hold)) };
+        text = d.term
+            ? t("vehChipWaitTerm", "at terminus · departs in {n} min", vars)
+            : t("vehChipWaitB", "at Terminus B · departs in {n} min", vars);
+    } else if (d.haveGap && d.h > 0) {
+        // Not held, and we have seen it leave the terminus at least once, so we know the gap it actually achieved.
+        // Compared against the line's target headway rather than reported bare: "7 minutes" means nothing without
+        // knowing whether the line is aiming for 6 or for 20.
+        const vars = { n: Math.round(d.gap), h: Math.round(d.h) };
+        const ratio = d.gap / d.h;
+        if (ratio < 0.75) { tone = "amber"; text = t("vehChipBunched", "bunched — {n} min behind (target {h})", vars); }
+        else if (ratio > 1.25) { tone = "amber"; text = t("vehChipGap", "trailing a gap — {n} min (target {h})", vars); }
+        else { tone = "green"; text = t("vehChipEven", "evenly spaced — {n} min", vars); }
     } else {
-        // In transit and nothing overdue. Deliberately NOT reported as "early", however negative `late` looks: the
-        // offsets are DEPARTURE times, so before the next stop's minute `late` is just the countdown to it. Calling
-        // that earliness produced the nonsense that a punctual bus two minutes into a ten-minute leg was "8 min
-        // early", resetting on every leg. Lateness cannot be carried forward from the previous stop either — the
-        // offsets come from an AVERAGED loop, so a quick leg genuinely recovers time. Once the clock passes the next
-        // stop's minute and the vehicle is still not there it is behind by exactly that overrun, which is the `late`
-        // branch above. Before that moment: on time, and no number invented.
-        text = t("vehChipOnTime", "on time");
+        // In service but never yet observed leaving the terminus: it joined mid-route from the depot, which is where
+        // the game spawns line vehicles. It is not mis-spaced, we simply have nothing to say about it yet.
+        tone = "grey";
+        text = t("vehChipRunning", "in service");
     }
-    // Same honesty as the line panel: a line still learning its loop should not present a firm minute as settled.
-    // One short line under the row rather than glued onto the chip, which has to stay scannable.
+    // Same honesty as the line panel: a line still measuring its loop does not yet know its own target, so a firm
+    // comparison against it would be overstated. One short line under the row rather than glued onto the chip, which
+    // has to stay scannable.
     const caveat = d.stage < 2
-        ? t("vehRefining", "This line is still measuring its real loop, so these times will shift.", vars)
+        ? t("vehSpacingNote", "This line is still measuring its real loop, so its spacing target will shift.")
         : "";
     return (
         <>
-            <InfoRow label={t("vehStatusLabel", "Schedule")}>
+            <InfoRow label={t("vehStatusLabel", "Spacing")}>
                 <Chip tone={tone} text={text} />
             </InfoRow>
             {caveat ? (
@@ -326,16 +284,16 @@ const VehicleSchedule = ({ raw }: { raw: string }) => {
 
 export const VehicleScheduleRow = () => {
     const raw = useValue(selVehInfo$) as string;
-    return <VehicleSchedule raw={raw} />;
+    return <VehicleSpacing raw={raw} />;
 };
 
 export const TimetableEditor = () => {
     const has = useValue(selHas$);
     const on = useValue(selTtEnabled$);
-    const first = useValue(selTtFirst$) as number;
-    const interval = useValue(selTtInterval$) as number;
     const fleet = useValue(selTtFleet$) as number;
-    const next = useValue(selTtNext$) as string;
+    const serving = useValue(selTtServing$) as number;
+    const headway = useValue(selTtHeadway$) as number;
+    const nextMin = useValue(selTtNextMin$) as number;
     const realInfo = useValue(selTtRealInfo$) as string;
     const terminus = useValue(selTtTerminus$) as number;
     const layover = useValue(selTtLayover$) as number;
@@ -347,14 +305,14 @@ export const TimetableEditor = () => {
     const nightHrs = useValue(nightHours$) as string;
     const t = useT();
     if (!has) return null;
-    // Only show the intervals the line actually runs: day-only → Peak+Off-peak, night-only → Night, both → all.
+    // Only show the windows the line actually runs: day-only → Peak+Off-peak, night-only → Night, both → all.
     const showDay = schedule === 0 || schedule === 2;
     const showNight = schedule === 1 || schedule === 2;
 
     return (
         <div style={{ borderTop: "1rem solid rgba(255,255,255,0.15)", padding: "8rem 14rem 10rem", color: "white" }}>
             <div style={{ display: "flex", alignItems: "center", marginBottom: "6rem" }}>
-                <div style={{ flex: 1, fontSize: "var(--fontSizeS)", fontWeight: "bold", textTransform: "uppercase", color: "var(--textColor)", opacity: 0.9 } as any}>{t("timetable", "TIMETABLE")}</div>
+                <div style={{ flex: 1, fontSize: "var(--fontSizeS)", fontWeight: "bold", textTransform: "uppercase", color: "var(--textColor)", opacity: 0.9 } as any}>{t("servicePlan", "SERVICE PLAN")}</div>
                 <button
                     onClick={() => trigger(G, "setSelTtEnabled", !on)}
                     style={{
@@ -367,38 +325,50 @@ export const TimetableEditor = () => {
             </div>
             {on && (
                 <>
+                    {/* WHAT THE PLAN IS PRODUCING, top line: the count in force and the spacing it buys. The headway is
+                        the OUTPUT of this mod, so it belongs here and not among the controls. "~" because it is a
+                        consequence of a measured loop, not a promise. */}
                     <div style={{ fontSize: "12rem", color: "rgb(120, 210, 130)", marginBottom: "2rem" }}>
-                        {t("ttNow", "now every {i} min · {f} vehicles", { i: interval, f: fleet })}
+                        {headway > 0
+                            ? t("planNow", "{f} vehicles · every ~{i} min", { f: fleet, i: headway })
+                            : t("planNowNoHeadway", "{f} vehicles", { f: fleet })}
                     </div>
+                    {/* The gap between "applied" and "actually out there" is the single most useful diagnostic during a
+                        peak ramp-up: it is the difference between the mod ignoring you and the depot still delivering.
+                        Only shown when they differ, so the row is silent in the normal case. */}
                     <div style={{ fontSize: "12rem", opacity: 0.7, marginBottom: "6rem" }}>
-                        {t("ttNext", "next: {n}", { n: next || "—" })}
+                        {serving !== fleet ? t("planRunning", "{r} of {f} running", { r: serving, f: fleet }) + " · " : ""}
+                        {nextMin >= 0
+                            ? t("planNext", "next departure in {n} min", { n: nextMin })
+                            : t("planNextUnknown", "no departure observed yet")}
                     </div>
                     <RealInfo raw={realInfo} />
-                    {/* The terminus is where the whole timetable is anchored: it is the stop whose departure board the
-                        clock is built from, and the only stop where vehicles are held to wait. Without a chosen one the
-                        dispatch silently uses the first stop with a boarding slot, which is route-order, not a decision.
-                        Two different messages on purpose — never choosing is a gap, having a choice discarded is a loss. */}
+                    {/* The terminus is where the whole thing happens: it is the stop where vehicles are held to even
+                        the line out, and where a surplus vehicle finishes its loop before going back to the depot.
+                        Without a chosen one the dispatch silently uses the first stop with a boarding slot, which is
+                        route order, not a decision. Two different messages on purpose — never choosing is a gap,
+                        having a choice discarded is a loss. */}
                     {terminus !== 0 ? (
                         <div style={{ fontSize: "11rem", color: "rgb(232, 168, 96)", marginBottom: "6rem", lineHeight: 1.35 }}>
                             {terminus === 2
-                                ? t("terminusLost", "This line's terminus is no longer on its route, so the timetable has fallen back to the first stop. Select a stop this line serves and set it as the terminus.")
-                                : t("terminusNone", "No terminus is set for this line, so the timetable is anchored to the first stop on the route. Select a stop this line serves and set it as the terminus to choose where vehicles wait for their departure.")}
+                                ? t("terminusLost", "This line's terminus is no longer on its route, so the mod has fallen back to the first stop. Select a stop this line serves and set it as the terminus.")
+                                : t("terminusNone", "No terminus is set for this line, so the mod evens its vehicles out at the first stop on the route. Select a stop this line serves and set it as the terminus to choose where they wait.")}
                         </div>
                     ) : null}
-                    {/* A layover the dispatch is NOT applying. State 3 in particular has no other home: the stop no
+                    {/* A Terminus B the dispatch is NOT applying. State 3 in particular has no other home: the stop no
                         longer lists this line, so the board cannot offer removal and the setting would sit invisible
                         in the save, reactivating if the route were edited back. Remove is offered for both. */}
                     {layover === 2 || layover === 3 ? (
                         <div style={{ fontSize: "11rem", color: "rgb(232, 168, 96)", marginBottom: "6rem", lineHeight: 1.35 }}>
                             {layover === 3
-                                ? t("layoverOrphan", "This line has a {n} min layover set on a stop that is no longer on its route, so it is not being applied.", { n: layoverMin })
-                                : t("layoverBlocked", "This line's {n} min layover is set on the stop the timetable now uses as its terminus, so it is not being applied. Move the terminus, or remove the layover.", { n: layoverMin })}
+                                ? t("layoverOrphan", "This line has a Terminus B ({n} min minimum layover) set on a stop that is no longer on its route, so it is not being applied.", { n: layoverMin })
+                                : t("layoverBlocked", "This line's Terminus B is set on the stop the mod now uses as its terminus, so it is not being applied. Move the terminus, or remove Terminus B.", { n: layoverMin })}
                             <div>
                                 <button
                                     onClick={() => trigger(G, "clearSelLayover")}
                                     style={{ marginTop: "4rem", cursor: "pointer", padding: "3rem 10rem", borderRadius: "4rem", fontSize: "11rem", color: "white", background: "rgba(150, 70, 70, 0.9)", pointerEvents: "auto" } as any}
                                 >
-                                    {t("layoverRemove", "Remove layover")}
+                                    {t("layoverRemove", "Remove Terminus B")}
                                 </button>
                             </div>
                         </div>
@@ -419,27 +389,11 @@ export const TimetableEditor = () => {
                             </div>
                         </div>
                     ) : null}
-                    {/* ±1 / ±10, deliberately identical to the interval rows below — one mental model for the panel.
-                        ±1 matters: staggering first departures a minute apart across lines that share a stop is a real
-                        technique, and the old ±15 (then ±5) could not express it.
-                        Why not an ±1h coarse step, given this is a clock? It would make crossing hours cheaper, but the
-                        long moves it helps with barely happen: ScheduleMath.FirstDeparture already auto-clamps a
-                        night-only line's first departure to the night window start (and a day-only line's into the
-                        day), so the extremes are set for you. Real edits are 5-60 min — exactly ±10's range. */}
-                    <div style={{ display: "flex", alignItems: "center", padding: "3rem 0" }}>
-                        <div style={{ flex: 1, fontSize: "13rem" }}>{t("firstDeparture", "First departure")}</div>
-                        {/* Margins, not `gap`: the game's cohtml UI has no flex gap. Coarse buttons sit slightly apart
-                            from the fine pair so the two granularities read as groups. */}
-                        <button style={{ ...stepBtnCoarse, marginRight: "5rem" }} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first - 10))}>−10</button>
-                        <button style={stepBtn} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first - 1))}>−</button>
-                        <div style={{ width: "54rem", textAlign: "center", fontSize: "13rem" }}>{hm(first)}</div>
-                        <button style={stepBtn} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first + 1))}>+</button>
-                        <button style={{ ...stepBtnCoarse, marginLeft: "5rem" }} onClick={() => trigger(G, "setSelTtFirst", wrapMin(first + 10))}>+10</button>
-                    </div>
-                    {showDay ? <IntervalRow label={t("peakInterval", "Peak")} hours={peakHrs} value$={selTtPeak$} trig="setSelTtPeak" /> : null}
-                    {showDay ? <IntervalRow label={t("offPeakInterval", "Off-peak")} hours={t("otherHours", "other hours")} value$={selTtOffPeak$} trig="setSelTtOffPeak" /> : null}
-                    {showNight ? <IntervalRow label={t("nightInterval", "Night")} hours={nightHrs} value$={selTtNight$} trig="setSelTtNight" /> : null}
-                    {/* Per-line custom peak (PR #5): two windows + interval, overriding the global peak for THIS line only. */}
+                    {showDay ? <CountRow label={t("peakVehicles", "Peak")} hours={peakHrs} value$={selPeakVeh$} trig="setSelPeakVeh" /> : null}
+                    {showDay ? <CountRow label={t("offPeakVehicles", "Off-peak")} hours={t("otherHours", "other hours")} value$={selOffPeakVeh$} trig="setSelOffPeakVeh" /> : null}
+                    {showNight ? <CountRow label={t("nightVehicles", "Night")} hours={nightHrs} value$={selNightVeh$} trig="setSelNightVeh" /> : null}
+                    {/* Per-line custom peak: two windows + its own vehicle count, overriding the global peak for THIS
+                        line only. */}
                     <div style={{ marginTop: "6rem", borderTop: "1px solid rgba(255,255,255,0.12)", paddingTop: "4rem" }}>
                         <div style={{ display: "flex", alignItems: "center", padding: "3rem 0" }}>
                             <div style={{ flex: 1, fontSize: "13rem" }}>{t("customLinePeak", "Custom peak (this line)")}</div>
@@ -453,12 +407,12 @@ export const TimetableEditor = () => {
                             <>
                                 <WindowRow label={t("morningPeak", "Morning peak")} start$={selCustomPeakStart1$} end$={selCustomPeakEnd1$} trigStart="setSelCustomPeakStart1" trigEnd="setSelCustomPeakEnd1" />
                                 <WindowRow label={t("eveningPeak", "Evening peak")} start$={selCustomPeakStart2$} end$={selCustomPeakEnd2$} trigStart="setSelCustomPeakStart2" trigEnd="setSelCustomPeakEnd2" />
-                                <IntervalRow label={t("customPeakInterval", "Custom peak interval")} value$={selCustomPeakInterval$} trig="setSelCustomPeakInterval" />
+                                <CountRow label={t("customPeakVehicles", "Custom peak vehicles")} value$={selCustomPeakVeh$} trig="setSelCustomPeakVeh" />
                             </>
                         ) : null}
                     </div>
                     <div style={{ fontSize: "11rem", opacity: 0.45, marginTop: "4rem" }}>
-                        {t("terminusHint", "Select a stop to see its departures and set it as this line's terminus.")}
+                        {t("terminusHint", "Select a stop to see when this line reaches it, and to set it as this line's terminus.")}
                     </div>
                 </>
             )}
@@ -466,11 +420,11 @@ export const TimetableEditor = () => {
     );
 };
 
-// The stop departure board — every line's next departures from the selected stop.
+// The stop arrivals board — when every line here is next expected, projected from its live spacing.
 const StopBoard = () => {
     const raw = useValue(selStopBoard$) as string;
     const t = useT();
-    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; est?: boolean; lay?: number; a?: string; layOff?: boolean; rule?: number; d: string }> = [];
+    let board: Array<{ n: number; nm?: string; tt: boolean; term: boolean; h?: number; est?: boolean; lay?: number; a?: string; layOff?: boolean; rule?: number; d: string }> = [];
     try { board = JSON.parse(raw || "[]"); } catch { board = []; }
     const ttCount = board.filter((e) => e.tt).length;
     const termBtn = {
@@ -513,15 +467,13 @@ const StopBoard = () => {
                             {e.lay ? (
                                 <div style={{ fontSize: "11rem", color: e.layOff ? "rgba(224, 186, 120, 0.5)" : "rgb(224, 186, 120)" }}>
                                     {/* NO GLYPH. This carried a U+23F8 pause symbol, which the game's UI font does
-                                        not contain, so it drew a tofu box on every layover row (seen in two players'
+                                        not contain, so it drew a tofu box on every row (seen in two players'
                                         screenshots). The terminus badge's ★ (U+2605) renders because it predates the
                                         emoji blocks; anything from those blocks is a gamble here. The amber colour
                                         already distinguishes this badge from the green terminus one. */}
-                                    {e.layOff ? t("layoverOff", "layover (inactive)") : t("layoverBadge", "layover stop")}
+                                    {e.layOff ? t("layoverOff", "Terminus B (inactive)") : t("layoverBadge", "Terminus B")}
                                 </div>
                             ) : null}
-                            {/* Words, not glyphs — the game's UI font has no arrows, and a layover badge shipped with
-                                a pause symbol that drew a tofu box on every row before that was learned. */}
                             {e.rule ? (
                                 <div style={{
                                     marginLeft: "6rem", fontSize: "11rem",
@@ -531,26 +483,41 @@ const StopBoard = () => {
                                 </div>
                             ) : null}
                         </div>
-                        {/* At the layover stop arrival and departure are the ONE place they differ: show both rows,
-                            arrivals first, both fed by C# from the same dispatch walk (never derived here). */}
+                        {/* THE HEADLINE for a headway service is the headway, not a list of times: "every 7 minutes"
+                            is what a passenger at a frequent stop actually needs, and it is the number the mod is
+                            directly responsible for. The projected times below it answer "but when exactly". */}
+                        {e.tt && e.h ? (
+                            <div style={{ fontSize: "12rem", color: "rgb(120, 210, 130)" }}>
+                                {t("everyMin", "every ~{n} min", { n: e.h })}
+                            </div>
+                        ) : null}
+                        {/* At Terminus B arrival and departure differ: show both rows, arrivals first. Both are derived
+                            from ONE projection in C#, so a departure can never print earlier than its own arrival. */}
                         {e.tt && e.lay && e.a ? (
                             <div style={{ fontSize: "12rem", color: "rgba(255,255,255,0.6)" }}>
                                 {t("arrives", "arrives: {d}", { d: e.a })}
                             </div>
                         ) : null}
-                        <div style={{ fontSize: "12rem", color: e.tt ? "rgb(120, 210, 130)" : "rgba(255,255,255,0.45)" }}>
-                            {e.tt ? (e.d ? t("departs", "departs: {d}", { d: e.d }) : t("noDepartures", "no departures scheduled")) : t("notTimetabled", "not timetabled")}
+                        <div style={{ fontSize: "12rem", color: e.tt ? "rgba(255,255,255,0.75)" : "rgba(255,255,255,0.45)" }}>
+                            {e.tt
+                                ? (e.d ? t("expected", "expected: {d}", { d: e.d }) : t("noHeadway", "spacing not established yet"))
+                                : t("notTimetabled", "not managed")}
                         </div>
-                        {/* The mod has not measured this stop yet, so these times come from the game's own travel
-                            estimate. Say so rather than printing them with the same confidence as measured ones. */}
-                        {e.tt && e.est && e.d ? (
-                            <div style={{ fontSize: "11rem", opacity: 0.45 }}>{t("estimatedTimes", "estimated, not yet measured")}</div>
+                        {/* These are a PROJECTION from the current spacing, not a printed timetable, and while the mod
+                            is still learning the line's real loop even the spacing is a guess. Say so rather than
+                            printing them with the confidence of a departure board. */}
+                        {e.tt && e.d ? (
+                            <div style={{ fontSize: "11rem", opacity: 0.45 }}>
+                                {e.est
+                                    ? t("estimatedTimes", "estimated — this line's real loop is not measured yet")
+                                    : t("projectedTimes", "projected from the current spacing")}
+                            </div>
                         ) : null}
-                        {/* The layover stepper: same ±1/±10 idiom as every other numeric control, absolute value sent.
-                            Stepping down to 0 clears the layover (the component is removed), same meaning as remove. */}
+                        {/* The Terminus B stepper: same ±1/±10 idiom as every other numeric control, absolute value
+                            sent. Stepping down to 0 removes Terminus B, same meaning as remove. */}
                         {e.tt && e.lay ? (
                             <div style={{ display: "flex", alignItems: "center", marginTop: "3rem", fontSize: "11rem" }}>
-                                <div style={{ color: "rgb(224, 186, 120)" }}>{t("layoverMin", "layover: {n} min", { n: e.lay })}</div>
+                                <div style={{ color: "rgb(224, 186, 120)" }}>{t("layoverMin", "min. layover: {n} min", { n: e.lay })}</div>
                                 {[-10, -1, 1, 10].map(dv => (
                                     <button
                                         key={dv}
@@ -576,8 +543,8 @@ const StopBoard = () => {
                                 >
                                     {t("setTerminusThis", "Set as terminus")}
                                 </button>
-                                {/* A row can be terminus OR layover, never both (the dispatch drops a layover that
-                                    lands on the effective terminus), so the offer only appears where it can stick. */}
+                                {/* A row can be terminus OR Terminus B, never both (the dispatch drops a B that lands
+                                    on the effective terminus), so the offer only appears where it can stick. */}
                                 {!e.lay ? (
                                     <button
                                         onClick={() => trigger(G, "setLayoverRow", i, -1)}
@@ -591,7 +558,7 @@ const StopBoard = () => {
                         {/* Who may get on and off here, for THIS line only — a kerb shared with other lines keeps
                             working normally for them. Offered on EVERY stop the line serves, the terminus included —
                             a technical call at the end of a run is a normal operating pattern, and the terminus keeps
-                            anchoring the schedule either way (see LineStopRule). */}
+                            regulating the spacing either way (see LineStopRule). */}
                         {e.tt ? (
                             <div style={{ marginTop: "5rem" }}>
                                 <div style={{ fontSize: "10rem", opacity: 0.5, marginBottom: "2rem" }}>
@@ -628,7 +595,7 @@ const StopBoard = () => {
                         </button>
                     ) : null}
                     <div style={{ fontSize: "11rem", opacity: 0.45, marginTop: ttCount >= 2 ? "6rem" : "0" }}>
-                        {t("setTerminusHint", "The terminus anchors the schedule and the vehicle hold; buses retire here.")}
+                        {t("setTerminusHint", "Vehicles are evened out at the terminus, and a surplus vehicle finishes its loop and retires here.")}
                     </div>
                 </div>
             )}
@@ -641,7 +608,7 @@ export const TransitButton = () => {
     return <FloatingButton src={ICON} tooltipLabel={t("buttonTooltip", "Transit Timetables")} onSelect={() => setOpen(!_open)} />;
 };
 
-// The one-time "vehicle counts are changing" notice. Rendered with the GAME'S OWN dialog component pushed onto its
+// The one-time "this mod works differently now" notice. Rendered with the GAME'S OWN dialog component pushed onto its
 // dialog stack, so it looks and behaves exactly like a vanilla confirmation (same shell, backdrop, button theme and
 // gamepad handling) while keeping our own localized strings and our own callbacks.
 //
@@ -649,42 +616,10 @@ export const TransitButton = () => {
 // dialog silently overwrites, and it delivers over a fire-and-forget event whose listener only exists while the Game
 // screen is mounted — which is exactly when we fire.
 //
-// The decline, rendered as dialog CONTENT rather than as the dialog's cancel button — see MigrationNotice for why.
-// Closes the dialog itself via DialogContext.onClose, which is the very context the dialog component consumes
-// internally (verified: cs2/ui exports DialogContext as the same object the dialog reads). Calling it directly closes
-// WITHOUT firing onCancel, so this cannot double-answer.
-const NoticeOptOut = () => {
-    const dlg = useContext(DialogContext);
-    const t = useT();
-    return (
-        <div style={{ display: "flex", justifyContent: "center", marginTop: "4rem" }}>
-            <button
-                onClick={() => {
-                    trigger(G, "noticeAnswer", false);
-                    if (dlg && typeof dlg.onClose === "function") dlg.onClose();
-                }}
-                style={{
-                    cursor: "pointer", padding: "5rem 14rem", borderRadius: "4rem", fontSize: "12rem",
-                    color: "white", opacity: 0.75, background: "rgba(90, 100, 115, 0.9)", pointerEvents: "auto",
-                } as any}
-            >
-                {t("noticeOff", "Keep them off")}
-            </button>
-        </div>
-    );
-};
-
-// BUTTON MAPPING — this looks odd and is deliberate. Two requirements have to hold at once: the affirmative action
-// should be the green one, and Escape / the X must NOT switch anything on. Turning provisioning on can raise a line's
-// vehicle count, and no dialog should do that merely by being dismissed. The dialog's own two buttons cannot express
-// that, because Escape, the X and the cancel button all route to the SAME onCancel handler.
-//
-// So the dialog is given only ONE button. `confirm` (green) is "Turn them on"; `cancellable={false}` suppresses the red
-// cancel button entirely; and onCancel — what Escape and the X fire — answers FALSE, leaving both settings off. The
-// decline moves into the dialog's content as our own button, which we control completely.
-//
-// Net: green is the affirmative action, every dismissal path leaves the city exactly as it was, and switching the
-// features on takes a deliberate click. This is the mirror image of the v0.5 mapping, for the mirror-image question.
+// ONE BUTTON, and no opt-out. This is not a choice: the change has already happened and the dialog exists to explain
+// it. Every dismissal path (the button, Escape, the X) therefore routes to the same answer, which merely records that
+// it has been read. That is the opposite of the previous notice's mapping, and correct for the opposite situation —
+// that one offered to turn something on, so a stray Escape had to mean "no".
 export const MigrationNotice = () => {
     const seq = useValue(noticeSeq$) as number;
     const stack = useContext(DialogStack);
@@ -695,27 +630,47 @@ export const MigrationNotice = () => {
         _noticeSeen = seq;   // only AFTER we know we can actually raise it
         stack.showDialog(
             <ConfirmationDialog
-                title={t("noticeTitle", "Realistic timings are switched off")}
+                title={t("noticeTitle", "Transit Timetables now works by vehicle count")}
                 // message MUST be a plain string, despite the ReactNode type. The dialog pipes it through the game's
                 // own text renderer — Children.toArray(msg).flatMap(e => ET(dc(i, e, "\n"))) — which expects strings
                 // and splits paragraphs on "\n". Passing JSX renders the literal text "[div/]" instead of the body.
                 message={[
-                    t("noticeBody", "Until now this mod always measured how long each line's route really takes, and used that for both its posted times and its vehicle counts. Both are separate settings now, and both start switched off, so this city is using the game's own travel estimate."),
-                    t("noticeAsk", "Turn realistic timings back on? Posted times will then match the route, and a line's vehicle count can rise to match."),
-                    t("noticeWhere", "You can change this at any time in Options, under Realism."),
+                    t("noticeBody", "Until now you told this mod how often a line should run and it worked out how many vehicles that needed. It is the other way round now: you say how many vehicles run in the peak, off-peak and at night, and the mod keeps them evenly spaced by holding them a little longer at the terminus."),
+                    t("noticeAsk", "Your existing lines have been converted — each one's old intervals became the number of vehicles that was already running to hold them, so nothing should change on the ground. There are no fixed departure times any more; a stop now shows how often a line comes and when it is next expected."),
+                    t("noticeWhere", "You can change each line's vehicle counts in its info panel, and the minimum terminus layover in Options."),
                 ].join("\n")}
-                confirm={t("noticeKeep", "Turn them on")}
+                confirm={t("noticeKeep", "Got it")}
                 cancellable={false}
                 onConfirm={() => trigger(G, "noticeAnswer", true)}
-                onCancel={() => trigger(G, "noticeAnswer", false)}
-            >
-                <NoticeOptOut />
-            </ConfirmationDialog>
+                onCancel={() => trigger(G, "noticeAnswer", true)}
+            />
         );
     }, [seq, stack, t]);
     return null;
 };
 
+// Kept mounted but unused by the notice above — see the DialogContext note. Retained because the dialog's content slot
+// is the only way this mod can add a control to a native dialog, and the next notice may need one again.
+export const NoticeOptOut = () => {
+    const dlg = useContext(DialogContext);
+    const t = useT();
+    return (
+        <div style={{ display: "flex", justifyContent: "center", marginTop: "4rem" }}>
+            <button
+                onClick={() => {
+                    trigger(G, "noticeAnswer", true);
+                    if (dlg && typeof dlg.onClose === "function") dlg.onClose();
+                }}
+                style={{
+                    cursor: "pointer", padding: "5rem 14rem", borderRadius: "4rem", fontSize: "12rem",
+                    color: "white", opacity: 0.75, background: "rgba(90, 100, 115, 0.9)", pointerEvents: "auto",
+                } as any}
+            >
+                {t("noticeKeep", "Got it")}
+            </button>
+        </div>
+    );
+};
 
 export const TransitPanelHost = () => {
     const open = useOpen();
@@ -732,9 +687,9 @@ export const TransitPanelHost = () => {
         }
     }, [auto]);
 
-    // Close the panel when the selection stops being a stop — e.g. the player clicks a transport LINE — so the
-    // empty "select a stop" hint doesn't linger over an unrelated panel (issue #3). Only the true->false transition
-    // closes it, so a panel opened from the toolbar button while nothing is selected still shows its hint.
+    // Close the panel when the selection stops being a stop — e.g. the player clicks a transport LINE — so the empty
+    // "select a stop" hint doesn't linger over an unrelated panel (issue #3). Only the true->false transition closes
+    // it, so a panel opened from the toolbar button while nothing is selected still shows its hint.
     const prevStopHas = useRef(stopHas);
     useEffect(() => {
         if (prevStopHas.current && !stopHas) setOpen(false);
@@ -762,14 +717,14 @@ export const TransitPanelHost = () => {
             }}
         >
             <div style={{ display: "flex", alignItems: "center", padding: "10rem 14rem", borderBottom: "1rem solid rgba(255,255,255,0.12)" }}>
-                <div style={{ flex: 1, fontSize: "var(--fontSizeM)", fontWeight: "bold", textTransform: "uppercase", color: "var(--textColor)" } as any}>{t("panelTitle", "DEPARTURES")}</div>
+                <div style={{ flex: 1, fontSize: "var(--fontSizeM)", fontWeight: "bold", textTransform: "uppercase", color: "var(--textColor)" } as any}>{t("panelTitle", "ARRIVALS")}</div>
                 <CloseGlyph onClick={() => setOpen(false)} />
             </div>
             {stopHas ? (
                 <StopBoard />
             ) : (
                 <div style={{ padding: "12rem 14rem", fontSize: "12rem", opacity: 0.6 }}>
-                    {t("panelHint", "Select a stop to see every line's departures from it. To edit a line's timetable, select the line — its controls are in the line's info panel.")}
+                    {t("panelHint", "Select a stop to see how often each line comes and when it is next expected. To change a line's vehicle counts, select the line — its controls are in the line's info panel.")}
                 </div>
             )}
         </div>

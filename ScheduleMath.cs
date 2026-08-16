@@ -2,76 +2,65 @@ using System;
 
 namespace TransitTimetables
 {
-    // Pure timetable math shared by the dispatch system and the UI. Everything here is day-length AGNOSTIC: all the
-    // clock/interval logic works in plain minutes-of-day. The ONE day-length-dependent conversion — route "duration
-    // units" <-> in-game minutes — is supplied at runtime by TimebaseSystem and passed in as `unitMinutes` (so this
-    // stays a pure static helper with no hidden global read). A route "duration unit" is a fixed 60 sim frames
-    // (RouteUtils); only the day length varies: vanilla = 262144 frames/day -> unitMinutes ~0.3296, and slow-time mods
-    // (Time2Work) stretch it. The dispatch/UI convert minutes<->frames with the matching TimebaseSystem.FramesPerMinute.
+    // Pure service math shared by the dispatch system and the UI. Everything here is day-length AGNOSTIC: the
+    // window logic works in plain minutes-of-day, and the headway logic works in whatever unit the caller passes
+    // (frames or minutes — it only ever divides). The ONE day-length-dependent conversion — route "duration units"
+    // <-> in-game minutes — is supplied at runtime by TimebaseSystem and passed in as `unitMinutes`, so this stays a
+    // pure static helper with no hidden global read. A route "duration unit" is a fixed 60 sim frames (RouteUtils);
+    // only the day length varies: vanilla = 262144 frames/day -> unitMinutes ~0.3296, and slow-time mods (Time2Work)
+    // stretch it.
+    //
+    // ===================== WHAT WAS DELETED HERE, AND WHY IT IS NOT COMING BACK =====================
+    // This file used to own an absolute DEPARTURE GRID: FirstDeparture / NextDeparture / PreviousDeparture /
+    // DayFromFirst / Upcoming / IntervalFor / MaxInterval / DerivedFleet. The mod set a clock time for every stop of
+    // every line and held vehicles to it.
+    //
+    // The model is gone. A player now states how many VEHICLES a line runs in each window; the headway is then a
+    // CONSEQUENCE (cycle / vehicles), not an input, and the mod's only intervention is to even the spacing out at the
+    // terminus. Nothing is posted against a wall clock, so there is no grid to walk, no "missed slot" to catch up, and
+    // no way for the printed board to disagree with the vehicles — the two failure modes that most of the deleted code
+    // existed to paper over.
+    //
+    // If you are tempted to re-add a grid: the reason a fixed grid could not work here is that the mod does not own
+    // the vehicles. Vanilla spawns them from depots on its own schedule, lets them skip stops, and retires them by
+    // odometer. A grid assumes a vehicle is available for every slot; a headway assumes only that the vehicles which
+    // exist should be spread out. The second assumption is the true one.
+    // ===============================================================================================
     //
     // Everything here is SCHEDULE-AWARE via a `schedule` argument (LineSchedule.Day/Night/DayAndNight): a night-only
-    // line only ever runs the night interval inside the night window (its first departure is interpreted within that
-    // window); a day-only line never uses the night interval and does not run at night.
+    // line only ever runs its night vehicle count, and only inside the night window; a day-only line never runs the
+    // night count and does not run at night at all.
     public static class ScheduleMath
     {
-        // Headway (minutes) in effect at a given minute-of-day, respecting the line's operating schedule. A per-line
-        // CUSTOM PEAK (PR #5), when enabled and the hour falls inside either custom window, OVERRIDES the global
-        // peak/off-peak/night for this line only.
-        public static int IntervalFor(TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int minuteOfDay, int schedule)
+        // How many vehicles this line should be running at a given minute-of-day, respecting its operating schedule.
+        // A per-line CUSTOM PEAK, when enabled and the hour falls inside either custom window, OVERRIDES the global
+        // peak/off-peak/night choice for this line only — exactly as the old custom-peak INTERVAL did.
+        //
+        // Returns 0 when the line is out of service (a day-only line at night, a night-only line by day). Zero is
+        // load-bearing and means "we have no opinion": the dispatch skips the fleet write entirely and lets vanilla
+        // shut the line down, which is what vanilla already does for an out-of-window line.
+        public static int VehiclesFor(TransitTimetablesSetting s, LineFleetPlan plan, CustomPeakSchedule customSch, int minuteOfDay, int schedule)
         {
+            if (!InService(s, schedule, minuteOfDay))
+                return 0;
             int hour = Hour(minuteOfDay);
             if (customSch.m_Enabled
                 && (InWindow(hour, customSch.m_Start1, customSch.m_End1) || InWindow(hour, customSch.m_Start2, customSch.m_End2)))
-                return Pos(customSch.m_Interval);
-            if (schedule == LineSchedule.Night) return Pos(sch.m_NightInterval);                          // night-only
-            if (schedule == LineSchedule.Day) return s.InPeakWindow(hour) ? Pos(sch.m_PeakInterval) : Pos(sch.m_OffPeakInterval); // day-only, never night
-            if (s.InNightWindow(hour)) return Pos(sch.m_NightInterval);
-            if (s.InPeakWindow(hour)) return Pos(sch.m_PeakInterval);
-            return Pos(sch.m_OffPeakInterval);
+                return Pos(plan.m_CustomPeakVehicles);
+            if (schedule == LineSchedule.Night) return Pos(plan.m_NightVehicles);                                    // night-only
+            if (schedule == LineSchedule.Day) return s.InPeakWindow(hour) ? Pos(plan.m_PeakVehicles) : Pos(plan.m_OffPeakVehicles); // day-only, never night
+            if (s.InNightWindow(hour)) return Pos(plan.m_NightVehicles);
+            if (s.InPeakWindow(hour)) return Pos(plan.m_PeakVehicles);
+            return Pos(plan.m_OffPeakVehicles);
         }
 
-        // Half-open [start, end) hour window, wrapping past midnight when start > end (mirrors TransitTimetablesSetting.InWindow). Public
-        // so the per-line custom-peak windows use the same rule the global windows do.
+        // Half-open [start, end) hour window, wrapping past midnight when start > end (mirrors
+        // TransitTimetablesSetting.InWindow). Public so the per-line custom-peak windows use the same rule the global
+        // windows do.
         public static bool InWindow(int hour, int start, int end)
         {
             if (start == end) return false;
             return start < end ? (hour >= start && hour < end) : (hour >= start || hour < end);
-        }
-
-        // The LONGEST headway this line can legitimately run, mirroring IntervalFor's own branches (a day-only line
-        // never uses the night interval, a night-only line uses nothing else). Any real gap between two consecutive
-        // slots equals some IntervalFor(...) value, so it is bounded by this — which makes it the safe ceiling for a
-        // hold. Deliberately NOT IntervalFor(now): the interval can CHANGE across a window boundary (a 04:50 night
-        // slot at interval 30 schedules 05:20, but IntervalFor(05:00) is the off-peak 12), so a per-minute bound would
-        // spuriously release a bus that is waiting a legitimate headway across the crossover.
-        public static int MaxInterval(TimetableSchedule sch, CustomPeakSchedule customSch, int schedule)
-        {
-            int max;
-            if (schedule == LineSchedule.Night) max = Pos(sch.m_NightInterval);
-            else
-            {
-                max = Pos(sch.m_PeakInterval);
-                int o = Pos(sch.m_OffPeakInterval);
-                if (o > max) max = o;
-                if (schedule != LineSchedule.Day) { int n = Pos(sch.m_NightInterval); if (n > max) max = n; } // day-only never runs night
-            }
-            // A custom-peak interval is also a headway this line can legitimately run, so the hold bound must include it.
-            if (customSch.m_Enabled) { int c = Pos(customSch.m_Interval); if (c > max) max = c; }
-            return max;
-        }
-
-        // The effective first-departure minute-of-day. A night-only line's first departure is interpreted within the
-        // night window: a value outside [NightStart, NightEnd) is clamped to the night window start.
-        public static int FirstDeparture(TransitTimetablesSetting s, TimetableSchedule sch, int schedule)
-        {
-            int first = sch.m_FirstDeparture;
-            // Clamp a first departure that falls outside the line's operating window to the window's start, so the
-            // day's schedule always begins on an in-service minute: night-only -> NightStart, day-only -> NightEnd.
-            if (schedule == LineSchedule.Night && !s.InNightWindow(Hour(first)))
-                return (((s.NightStart % 24) + 24) % 24) * 60;
-            if (schedule == LineSchedule.Day && s.InNightWindow(Hour(first)))
-                return (((s.NightEnd % 24) + 24) % 24) * 60;
-            return first;
         }
 
         // Is a minute-of-day inside the line's operating window? (Night-only: the night window; day-only: everything
@@ -84,114 +73,45 @@ namespace TransitTimetables
             return true;
         }
 
-        // Next scheduled departure as an ABSOLUTE minute from today's midnight (may be negative when tonight's night
-        // service actually started yesterday, or exceed 1439 for tomorrow) that is >= nowMinute AND in-service. Scans
-        // yesterday/today/tomorrow so a night window that wraps past midnight resolves correctly. Used by the hold.
-        public static int NextDeparture(TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int nowMinute)
+        // THE HEADWAY. One closed loop, `vehicles` of them, each taking `cycle` to come round: they can only be evenly
+        // spaced at cycle/vehicles apart. Unit-agnostic — pass frames, get frames; pass minutes, get minutes — because
+        // the dispatch works in frames (monotonic, midnight-safe) while the UI works in minutes.
+        //
+        // `cycle` must be the FULL round trip INCLUDING the layovers the mod itself imposes at the timing points, not
+        // just the driving time. Feeding it the bare loop understates the headway, every vehicle then arrives back
+        // later than its target and the regulation degenerates into "leave immediately", which is vanilla.
+        public static float Headway(float cycle, int vehicles)
         {
-            int first = FirstDeparture(s, sch, schedule);
-            for (int day = -1; day <= 1; day++)
-            {
-                int t = first + day * 1440;
-                int dayEnd = t + 1440; // keep each day's progression ANCHORED at `first`: don't let it step across the
-                                       // midnight boundary onto a different residue when the interval doesn't divide
-                                       // 1440 — that drifted the whole day's schedule off the set first-departure.
-                int guard = 0;
-                while (guard < 4000 && t < dayEnd)
-                {
-                    int minute = Mod1440(t);
-                    if (!InService(s, schedule, minute)) break; // left the operating window -> this block is done
-                    if (t >= nowMinute) return t;               // earliest in-window departure at/after now
-                    t += IntervalFor(s, sch, customSch, minute, schedule);
-                    guard++;
-                }
-            }
-            return first;
-        }
-
-        // The most recent scheduled departure STRICTLY BEFORE nowMinute, as an ABSOLUTE minute from today's midnight
-        // (may be negative when it belongs to yesterday's service). Mirror of NextDeparture with the SAME anchored
-        // day-stepping, so a night window that wraps past midnight and a non-dividing interval stay aligned. Used by the
-        // missed-trip catch-up to tell whether a scheduled slot has passed UNCOVERED. Returns int.MinValue when no
-        // in-service departure precedes now (e.g. before the very first departure of a day-only line).
-        public static int PreviousDeparture(TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int nowMinute)
-        {
-            int first = FirstDeparture(s, sch, schedule);
-            int best = int.MinValue;
-            for (int day = -1; day <= 1; day++)
-            {
-                int t = first + day * 1440;
-                int dayEnd = t + 1440;
-                int guard = 0;
-                while (guard < 4000 && t < dayEnd)
-                {
-                    int minute = Mod1440(t);
-                    if (!InService(s, schedule, minute)) break; // left the operating window -> this block is done
-                    if (t < nowMinute) best = t;                // latest in-window departure strictly before now...
-                    else break;                                 // ...t reached now; nothing later in the scan is earlier
-                    t += IntervalFor(s, sch, customSch, minute, schedule);
-                    guard++;
-                }
-            }
-            return best;
-        }
-
-        // The day's departures listed FROM the first departure (printed-timetable style), as minute-of-day 0..1439,
-        // stopping at the operating-window boundary. Fills up to `count`; returns how many.
-        public static int DayFromFirst(TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int[] outMin, int count)
-        {
-            int t = FirstDeparture(s, sch, schedule);
-            int n = 0, guard = 0;
-            while (n < count && guard < 4000)
-            {
-                int minute = Mod1440(t);
-                outMin[n++] = minute;
-                int next = t + IntervalFor(s, sch, customSch, minute, schedule);
-                if (!InService(s, schedule, Mod1440(next))) break; // reached the window boundary
-                t = next;
-                guard++;
-            }
-            return n;
-        }
-
-        // The next `count` departures at/after nowMinute (as minute-of-day 0..1439), schedule-aware. Steps via
-        // NextDeparture so night/day operating windows and midnight wrap are handled. Returns how many filled.
-        public static int Upcoming(TransitTimetablesSetting s, TimetableSchedule sch, CustomPeakSchedule customSch, int schedule, int nowMinute, int[] outMin, int count)
-        {
-            int t = NextDeparture(s, sch, customSch, schedule, nowMinute);
-            int n = 0, guard = 0;
-            while (n < count && guard < 4000)
-            {
-                outMin[n++] = Mod1440(t);
-                int next = NextDeparture(s, sch, customSch, schedule, t + 1);
-                if (next <= t) break; // safety: schedule not advancing
-                t = next;
-                guard++;
-            }
-            return n;
+            if (vehicles < 1) vehicles = 1;
+            return cycle <= 0f ? 0f : cycle / vehicles;
         }
 
         // Round-trip time of one vehicle over the whole line, in in-game minutes. `unitMinutes` is the runtime
         // route-unit->minute scale from TimebaseSystem (vanilla ~0.3296; smaller under a stretched day).
         public static float RoundTripMinutes(float stableDurationUnits, float unitMinutes) => stableDurationUnits * unitMinutes;
 
-        // Vehicles needed to sustain the given headway = ceil(round-trip / interval), at least 1.
-        public static int DerivedFleet(float stableDurationUnits, int intervalMinutes, float unitMinutes)
+        // Vehicles needed to sustain a given headway = ceil(round-trip / headway), at least 1. NOT used to size
+        // anything any more — the player sizes the line. It survives for exactly one job: converting a save's LEGACY
+        // per-window INTERVALS into the per-window vehicle counts that replaced them (see MigrateFleetPlan), so an
+        // upgraded city keeps roughly the service level it had instead of jumping to a default.
+        public static int VehiclesForHeadway(float roundTripMinutes, int headwayMinutes)
         {
-            intervalMinutes = Pos(intervalMinutes);
-            int fleet = (int)Math.Ceiling(RoundTripMinutes(stableDurationUnits, unitMinutes) / intervalMinutes);
+            if (headwayMinutes < 1) headwayMinutes = 1;
+            int fleet = (int)Math.Ceiling(roundTripMinutes / headwayMinutes);
             return fleet < 1 ? 1 : fleet;
         }
 
-        // ===== Real-travel-time correction (issue: the game's path estimate undershoots real loop time) =====
+        // ===== Real-travel-time correction (the game's path estimate undershoots real loop time) =====
         // The correction is a DIMENSIONLESS factor = (real loop) / (estimated loop). It multiplies the estimate to
-        // recover the real value, and it is RT-INVARIANT (both quantities are frame-based, so a stretched clock cancels).
+        // recover the real value, and it is RT-INVARIANT (both quantities are frame-based, so a stretched clock
+        // cancels). It is no longer optional: the headway is computed FROM the loop, so an estimate that is 2x short
+        // would space vehicles at half the interval they can actually keep and the regulation would never bind.
 
-        // COLD-START prior for a line with no measured loops yet. Live data from one city (2026-07) showed the undershoot
-        // rises with stop density (stops per loop-minute): ~1.7x on sparse lines, ~2.5x on stop-dense ones, plateauing
-        // near ~2.5x. Rough linear fit with an intercept near 1 (a hypothetical stopless express would match the
-        // estimate). RT-invariant: uses the FIXED vanilla unit->minute constant, not the live scale, so a slow-time mod
-        // does not move the prior. The caller clamps the result.
+        // COLD-START prior for a line with no measured loops yet. Live data from one city (2026-07) showed the
+        // undershoot rises with stop density (stops per loop-minute): ~1.7x on sparse lines, ~2.5x on stop-dense ones,
+        // plateauing near ~2.5x. Rough linear fit with an intercept near 1 (a hypothetical stopless express would match
+        // the estimate). RT-invariant: uses the FIXED vanilla unit->minute constant, not the live scale, so a slow-time
+        // mod does not move the prior. The caller clamps the result.
         public static float DensityPriorRatio(int stops, float stableDurationUnits)
         {
             if (stops <= 0 || stableDurationUnits <= 1f) return 1f;
@@ -201,16 +121,15 @@ namespace TransitTimetables
             float density = stops / estMinutes;            // stops per reference-minute (matches how the 7.7 slope was fit)
             float r = 1.1f + 7.7f * density;               // linear fit over the OBSERVED density range (0.08-0.18)
             // The live data PLATEAUED near ~2.5x — the undershoot stops climbing once stops are close — and we have no
-            // evidence above that, so a very dense line must NOT be linearly extrapolated toward the 4x safety clamp on a
-            // cold start. Cap the PRIOR at the observed plateau; live measurement (which may legitimately exceed it)
+            // evidence above that, so a very dense line must NOT be linearly extrapolated toward the 4x safety clamp on
+            // a cold start. Cap the PRIOR at the observed plateau; live measurement (which may legitimately exceed it)
             // takes over after a few loops. The caller still clamps.
             return r > 2.6f ? 2.6f : r;
         }
 
-        // Clamp a correction factor into a safe range. For FLEET sizing it is grow-only (>= 1): never cut a line's
-        // vehicle count below the estimate on a possibly-noisy low reading, which would strand passengers. For the
-        // schedule/offsets a genuinely fast line may legitimately post EARLIER than the estimate, so the floor is 0.5.
-        // Both are capped at 4x so a bad measurement can never blow the numbers up.
+        // Clamp a correction factor into a safe range. The floor is 0.5 (a genuinely fast line may beat the estimate)
+        // and the ceiling 4x, so a bad measurement can never blow the headway up. `forFleet` is retained for callers
+        // that want the old grow-only behaviour; nothing in the mod sizes a fleet from a measurement any more.
         public static float ClampCorrection(float factor, bool forFleet)
         {
             if (float.IsNaN(factor) || float.IsInfinity(factor)) return 1f;

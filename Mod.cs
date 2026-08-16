@@ -38,15 +38,16 @@ namespace TransitTimetables
             updateSystem.UpdateAt<TimebaseSystem>(SystemUpdatePhase.GameSimulation);
             // Fleet-control helper (per-line vehicle-count via the line's own VehicleInterval modifier).
             updateSystem.UpdateAt<HourlyFleetSystem>(SystemUpdatePhase.GameSimulation);
-            // Fixed-departure timetabling: terminus hold, derived fleet, retire-at-terminus.
+            // Headway regulation: apply the player's per-window vehicle counts, even the vehicles out at the timing
+            // points, and retire a surplus at the terminus rather than mid-route.
             updateSystem.UpdateAt<TimetableDispatchSystem>(SystemUpdatePhase.GameSimulation);
             // Per-stop boarding rules (drop-off only / pick-up only / technical): edits the passenger pathfind graph,
             // which is where the game actually decides who may get on and off where.
             updateSystem.UpdateAt<StopRuleSystem>(SystemUpdatePhase.GameSimulation);
-            // Line-panel editor + stop departure board bindings (floating overlay, does not pause the game).
+            // Line-panel editor + stop arrivals board bindings (floating overlay, does not pause the game).
             updateSystem.UpdateAt<TransitParamsUISystem>(SystemUpdatePhase.UIUpdate);
 
-            log.Info("[SelfTest] TransitTimetables loaded (fixed-departure timetables).");
+            log.Info("[SelfTest] TransitTimetables loaded (vehicle counts + headway regulation).");
         }
 
         // Flush settings to disk for CODE-DRIVEN writes (the migration above) — the Options page saves itself, since
@@ -104,6 +105,8 @@ namespace TransitTimetables
                 { m_S.GetOptionDescLocaleID(nameof(TransitTimetablesSetting.MaxDwellRoad)), T("opt.MaxDwellRoad.D") },
                 { m_S.GetOptionLabelLocaleID(nameof(TransitTimetablesSetting.MaxDwellRail)), T("opt.MaxDwellRail.L") },
                 { m_S.GetOptionDescLocaleID(nameof(TransitTimetablesSetting.MaxDwellRail)), T("opt.MaxDwellRail.D") },
+                { m_S.GetOptionLabelLocaleID(nameof(TransitTimetablesSetting.MinTerminusDwell)), T("opt.MinTerminusDwell.L") },
+                { m_S.GetOptionDescLocaleID(nameof(TransitTimetablesSetting.MinTerminusDwell)), T("opt.MinTerminusDwell.D") },
 
                 { m_S.GetOptionLabelLocaleID(nameof(TransitTimetablesSetting.RealisticTripsCompat)), T("opt.RealisticTripsCompat.L") },
                 { m_S.GetOptionDescLocaleID(nameof(TransitTimetablesSetting.RealisticTripsCompat)), T("opt.RealisticTripsCompat.D") },
